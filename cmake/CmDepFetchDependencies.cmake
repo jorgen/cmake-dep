@@ -1,8 +1,17 @@
-# Standalone dependency fetcher for use with: cmake -P <script>
-# Provides CmDepFetchDependenciesSetup(project_root packages_file) which:
-#   - Takes explicit project root and packages file paths
-#   - Defines standalone-mode CmDepFetch3rdParty_Package macro
-#   - Includes the given packages file
+# Standalone dependency fetcher.
+#
+# Can be used directly as a script:
+#   cmake -DCMDEP_PACKAGES_FILE=CMake/3rdPartyPackages.cmake -P 3rdparty/cmake-dep/cmake/CmDepFetchDependencies.cmake
+#
+# Optional variables (pass with -D):
+#   CMDEP_PACKAGES_FILE  - path to the packages file (required in script mode)
+#   CMDEP_PROJECT_ROOT   - project root directory (defaults to cwd)
+#   CMDEP_3RD_PARTY_DIR  - override 3rdparty directory
+#   POINTS_3RD_PARTY_DIR - legacy alias for CMDEP_3RD_PARTY_DIR
+#
+# Or include() it and call the function directly:
+#   include(CmDepFetchDependencies)
+#   CmDepFetchDependenciesSetup(project_root packages_file)
 
 function(CmDepFetchDependenciesSetup project_root packages_file)
     # Determine the 3rdparty directory
@@ -73,3 +82,18 @@ function(CmDepFetchDependenciesSetup project_root packages_file)
 
     message(STATUS "All dependencies fetched to: ${_3rdparty_dir}")
 endfunction()
+
+# Auto-invoke when run as: cmake -DCMDEP_PACKAGES_FILE=... -P CmDepFetchDependencies.cmake
+if(DEFINED CMDEP_PACKAGES_FILE AND CMAKE_SCRIPT_MODE_FILE)
+    if(NOT CMDEP_PROJECT_ROOT)
+        set(CMDEP_PROJECT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
+    endif()
+    get_filename_component(CMDEP_PROJECT_ROOT "${CMDEP_PROJECT_ROOT}" ABSOLUTE)
+    get_filename_component(CMDEP_PACKAGES_FILE "${CMDEP_PACKAGES_FILE}" ABSOLUTE)
+
+    if(NOT EXISTS "${CMDEP_PACKAGES_FILE}")
+        message(FATAL_ERROR "Packages file not found: ${CMDEP_PACKAGES_FILE}")
+    endif()
+
+    CmDepFetchDependenciesSetup("${CMDEP_PROJECT_ROOT}" "${CMDEP_PACKAGES_FILE}")
+endif()
