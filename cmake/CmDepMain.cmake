@@ -1,0 +1,4 @@
+include(CmDepGetPackageInstallDir)
+include(CmDepBuildExternal)
+include(CmDepBuildExternalTargetLinkLibrary)
+include(CmDepFetch3rdParty)
