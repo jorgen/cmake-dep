@@ -155,31 +155,41 @@ CmDepFetch3rdParty_File(my_header v1.0
 
 ## Standalone Fetch (CI / Pre-build)
 
-Dependencies can be fetched outside of a full CMake configure, useful for CI caching. cmake-dep
-provides `CmDepFetchDependenciesSetup()` for this purpose.
-
-Create a thin wrapper script in your project:
-
-```cmake
-# CMake/FetchDependencies.cmake
-cmake_minimum_required(VERSION 3.18)
-
-get_filename_component(_script_dir "${CMAKE_CURRENT_LIST_DIR}" ABSOLUTE)
-get_filename_component(_project_root "${_script_dir}/.." ABSOLUTE)
-
-# cmake-dep must be on disk (sibling checkout or from a prior configure)
-include(${_project_root}/../cmake-dep/cmake/CmDepFetchDependencies.cmake)
-CmDepFetchDependenciesSetup("${_project_root}" "${_script_dir}/3rdPartyPackages.cmake")
-```
-
-Then run it from the command line:
+Dependencies can be fetched outside of a full CMake configure, useful for CI caching.
+`CmDepFetchDependencies.cmake` can be run directly as a script -- no wrapper needed:
 
 ```bash
-cmake -P CMake/FetchDependencies.cmake
+cmake -DCMDEP_PACKAGES_FILE=CMake/3rdPartyPackages.cmake \
+      -P 3rdparty/cmake-dep/cmake/CmDepFetchDependencies.cmake
 ```
 
 This downloads all packages without running a full configure, which lets CI cache the `3rdparty/`
 directory independently from the build.
+
+Optional variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `CMDEP_PACKAGES_FILE` | *(required)* | Path to your packages definition file |
+| `CMDEP_PROJECT_ROOT` | Current working directory | Project root for resolving `3rdparty/` |
+| `CMDEP_3RD_PARTY_DIR` | `${CMDEP_PROJECT_ROOT}/3rdparty` | Override 3rdparty directory |
+
+A typical CI workflow (cmake-dep is fetched into `3rdparty/` by the first configure, then cached):
+
+```yaml
+- name: Cache 3rdparty
+  uses: actions/cache@v4
+  with:
+    path: 3rdparty
+    key: 3rdparty-${{ hashFiles('CMake/3rdPartyPackages.cmake') }}
+
+- name: Fetch cmake-dep
+  if: ${{ !hashFiles('3rdparty/cmake-dep/cmake/CmDepMain.cmake') }}
+  run: git clone --depth 1 https://github.com/jorgen/cmake-dep.git 3rdparty/cmake-dep
+
+- name: Fetch dependencies
+  run: cmake -DCMDEP_PACKAGES_FILE=CMake/3rdPartyPackages.cmake -P 3rdparty/cmake-dep/cmake/CmDepFetchDependencies.cmake
+```
 
 ## Complete Example
 
