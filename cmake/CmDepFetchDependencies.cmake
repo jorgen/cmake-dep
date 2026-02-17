@@ -6,19 +6,16 @@
 # Optional variables (pass with -D):
 #   CMDEP_PACKAGES_FILE  - path to the packages file (required in script mode)
 #   CMDEP_PROJECT_ROOT   - project root directory (defaults to cwd)
-#   CMDEP_3RD_PARTY_DIR  - override 3rdparty directory
-#   POINTS_3RD_PARTY_DIR - legacy alias for CMDEP_3RD_PARTY_DIR
+#   CMDEP_DIR            - override 3rdparty directory
 #
 # Or include() it and call the function directly:
 #   include(CmDepFetchDependencies)
-#   CmDepFetchDependenciesSetup(project_root packages_file)
+#   CmDepFetchSetup(project_root packages_file)
 
-function(CmDepFetchDependenciesSetup project_root packages_file)
+function(CmDepFetchSetup project_root packages_file)
     # Determine the 3rdparty directory
-    if(CMDEP_3RD_PARTY_DIR)
-        set(_3rdparty_dir "${CMDEP_3RD_PARTY_DIR}")
-    elseif(POINTS_3RD_PARTY_DIR)
-        set(_3rdparty_dir "${POINTS_3RD_PARTY_DIR}")
+    if(CMDEP_DIR)
+        set(_3rdparty_dir "${CMDEP_DIR}")
     else()
         set(_3rdparty_dir "${project_root}/3rdparty")
     endif()
@@ -27,7 +24,7 @@ function(CmDepFetchDependenciesSetup project_root packages_file)
 
     message(STATUS "3rdparty directory: ${_3rdparty_dir}")
 
-    macro(CmDepFetch3rdParty_Package name version url url_hash)
+    macro(CmDepFetchPackage name version url url_hash)
         set(_target_dir "${_3rdparty_dir}/${name}-${version}")
         if(EXISTS "${_target_dir}")
             message(STATUS "${name}-${version}: already exists, skipping")
@@ -95,5 +92,5 @@ if(DEFINED CMDEP_PACKAGES_FILE AND CMAKE_SCRIPT_MODE_FILE)
         message(FATAL_ERROR "Packages file not found: ${CMDEP_PACKAGES_FILE}")
     endif()
 
-    CmDepFetchDependenciesSetup("${CMDEP_PROJECT_ROOT}" "${CMDEP_PACKAGES_FILE}")
+    CmDepFetchSetup("${CMDEP_PROJECT_ROOT}" "${CMDEP_PACKAGES_FILE}")
 endif()
