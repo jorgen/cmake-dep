@@ -48,10 +48,30 @@ CmDepFetchPackage(doctest v2.4.12
 ```
 
 Each call to `CmDepFetchPackage(name version url hash)` downloads and extracts the
-archive into `3rdparty/<name>-<version>/`, and sets two variables in the calling scope:
+archive into `3rdparty/<name>-<version>/`, and sets three variables in the calling scope:
 
 - `${name}_SOURCE_DIR` -- path to the extracted source
-- `${name}_VERSION` -- the version string
+- `${name}_VERSION` -- the version string (the effective, possibly-overridden one)
+- `${name}_USE_SYSTEM` -- `ON`/`OFF`; whether a system copy was requested (see below)
+
+### Per-dependency overrides and system toggles
+
+`CmDepFetchPackage` also auto-declares, for every dependency, a set of cache knobs
+prefixed by your project name (uppercased). The prefix defaults to
+`${PROJECT_NAME}` -- so a `project(myproj)` yields `MYPROJ_*` knobs with no extra
+configuration. (It re-scopes correctly with `project()`, so a bundled sub-project
+gets its own prefix. Override it with `CMDEP_PROJECT` if the desired prefix differs
+from the project name, or in `cmake -P` script mode where no `project()` has run.)
+
+For `CmDepFetchPackage(libuv v1.51.0 <url> SHA256=<hash>)` in project `myproj`:
+
+| Knob | Effect |
+|---|---|
+| `MYPROJ_LIBUV_VERSION` / `MYPROJ_LIBUV_URL` / `MYPROJ_LIBUV_SHA256` | Override the fetched version / URL / hash (`-D…` wins over the file's defaults). The hash var is named after the algorithm in the `ALGO=HEX` token. |
+| `MYPROJ_USE_SYSTEM_LIBUV` | `ON` skips the fetch entirely (consume a system copy instead). Default `OFF`. |
+
+So a consumer can fetch a different version -- `-DMYPROJ_LIBUV_URL=… -DMYPROJ_LIBUV_SHA256=…` --
+or opt out of the fetch -- `-DMYPROJ_USE_SYSTEM_LIBUV=ON` -- without editing the packages file.
 
 ### 2. Fetch during configure
 
@@ -72,6 +92,48 @@ or anything else:
 
 ```cmake
 add_subdirectory(${libuv_SOURCE_DIR} "${CMAKE_CURRENT_BINARY_DIR}/libuv_build" SYSTEM)
+```
+
+### 3b. Let cmake-dep own the find-vs-build branch
+
+For the common "system copy via `find_package`, otherwise `add_subdirectory` the fetched
+source" pattern, `CmDepAddPackage` does the branch for you -- reading the `MYPROJ_USE_SYSTEM_<DEP>`
+toggle declared by `CmDepFetchPackage`:
+
+```cmake
+# system: find_package(structify CONFIG REQUIRED); bundled: add_subdirectory(... SYSTEM)
+CmDepAddPackage(structify CONFIG)
+
+# force build knobs OFF/ON around the add_subdirectory (unset again afterwards)
+CmDepAddPackage(llhttp CONFIG OPTIONS LLHTTP_BUILD_SHARED_LIBS=OFF LLHTTP_BUILD_STATIC_LIBS=ON)
+
+# re-expose a header dir; skip the bundled build if the target already exists
+CmDepAddPackage(vio CONFIG PUBLIC_INCLUDE src
+    OPTIONS VIO_BUILD_TESTS=OFF VIO_BUILD_SHARED=OFF VIO_INSTALL=OFF)
+```
+
+Options:
+
+| Option | Effect |
+|---|---|
+| `CONFIG` | Use `find_package(<pkg> CONFIG REQUIRED)` in system mode (default is plain `REQUIRED`) |
+| `PACKAGE <pkg>` | `find_package` name override (default `<name>`) -- e.g. `CMakeRC` for package `cmakerc` |
+| `OPTIONS <VAR=VAL>…` | Boolean cache knobs forced before `add_subdirectory`, unset after |
+| `SUBDIR_ARGS <args>…` | Extra `add_subdirectory` args (default `SYSTEM`) |
+| `SKIP_IF_TARGET <tgt>` | In bundled mode, skip if `<tgt>` already exists (avoids duplicate-target clashes) |
+| `PUBLIC_INCLUDE <dir>` | `target_include_directories(<name> PUBLIC ${<name>_SOURCE_DIR}/<dir>)` after the add |
+| `NO_SYSTEM_FIND` | In system mode do nothing (the `find_package` is handled elsewhere) |
+
+For dependencies whose bundled path isn't a plain `add_subdirectory` (e.g. `include()`-based or
+ExternalProject builds), branch by hand on the `${name}_USE_SYSTEM` signal (or query it with
+`CmDepUseSystem(<name> out_var)`):
+
+```cmake
+if (cmakerc_USE_SYSTEM)
+    find_package(CMakeRC CONFIG REQUIRED)
+else ()
+    include(${cmakerc_SOURCE_DIR}/CMakeRC.cmake)
+endif ()
 ```
 
 ## Building External Projects
@@ -228,8 +290,10 @@ CmDepTargetLinkLibrary(my_server PRIVATE LibreSSL::TLS LibreSSL::SSL LibreSSL::C
 | Function | Description |
 |---|---|
 | `CmDepFetch()` | Fetch all packages listed in `CMDEP_PACKAGES_FILE` |
-| `CmDepFetchPackage(name version url hash)` | Download and extract an archive |
+| `CmDepFetchPackage(name version url hash)` | Download and extract an archive; auto-declare per-dep override + `USE_SYSTEM` knobs |
 | `CmDepFetchFile(name version url dest_name hash)` | Download a single file |
+| `CmDepAddPackage(name [CONFIG] [PACKAGE p] [OPTIONS …] [SUBDIR_ARGS …] [SKIP_IF_TARGET t] [PUBLIC_INCLUDE d] [NO_SYSTEM_FIND])` | Own the find_package-vs-add_subdirectory branch for a fetched dep |
+| `CmDepUseSystem(name out_var)` | Query whether the system copy of `name` was requested |
 | `CmDepBuildExternal(name version source_dir args targets)` | Build a dependency via ExternalProject |
 | `CmDepTargetLinkLibrary(target scope targets...)` | Link against external and regular targets |
 | `CmDepInstallDir(var name version)` | Get the install path for an external build |
@@ -241,6 +305,7 @@ CmDepTargetLinkLibrary(my_server PRIVATE LibreSSL::TLS LibreSSL::SSL LibreSSL::C
 |---|---|---|
 | `CMDEP_PACKAGES_FILE` | *(required)* | Path to your packages definition file |
 | `CMDEP_DIR` | `${PROJECT_SOURCE_DIR}/3rdparty` | Where to store fetched sources |
+| `CMDEP_PROJECT` | `${PROJECT_NAME}` | Prefix (uppercased) for the auto-declared `<PREFIX>_<DEP>_*` / `<PREFIX>_USE_SYSTEM_<DEP>` knobs |
 
 ## Requirements
 
