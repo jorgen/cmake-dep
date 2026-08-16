@@ -101,7 +101,8 @@ source" pattern, `CmDepAddPackage` does the branch for you -- reading the `MYPRO
 toggle declared by `CmDepFetchPackage`:
 
 ```cmake
-# system: find_package(structify CONFIG REQUIRED); bundled: add_subdirectory(... SYSTEM)
+# system: find_package(structify CONFIG REQUIRED)
+# bundled: add_subdirectory(... SYSTEM EXCLUDE_FROM_ALL)
 CmDepAddPackage(structify CONFIG)
 
 # force build knobs OFF/ON around the add_subdirectory (unset again afterwards)
@@ -119,10 +120,35 @@ Options:
 | `CONFIG` | Use `find_package(<pkg> CONFIG REQUIRED)` in system mode (default is plain `REQUIRED`) |
 | `PACKAGE <pkg>` | `find_package` name override (default `<name>`) -- e.g. `CMakeRC` for package `cmakerc` |
 | `OPTIONS <VAR=VAL>…` | Boolean cache knobs forced before `add_subdirectory`, unset after |
-| `SUBDIR_ARGS <args>…` | Extra `add_subdirectory` args (default `SYSTEM`) |
+| `SUBDIR_ARGS <args>…` | Replaces the `add_subdirectory` args (default `SYSTEM`). `EXCLUDE_FROM_ALL` is applied on top of whatever you pass, unless `INCLUDE_IN_ALL` |
+| `INCLUDE_IN_ALL` | Add the subdirectory to `ALL` -- opt out of the `EXCLUDE_FROM_ALL` default (see below) |
 | `SKIP_IF_TARGET <tgt>` | In bundled mode, skip if `<tgt>` already exists (avoids duplicate-target clashes) |
 | `PUBLIC_INCLUDE <dir>` | `target_include_directories(<name> PUBLIC ${<name>_SOURCE_DIR}/<dir>)` after the add |
 | `NO_SYSTEM_FIND` | In system mode do nothing (the `find_package` is handled elsewhere) |
+
+#### `EXCLUDE_FROM_ALL` is the default
+
+A bundled dependency is added `SYSTEM EXCLUDE_FROM_ALL`: it gets built because something links
+it, not because it happens to sit in the tree. Without this, a consumer compiles and links every
+target the dependency defines -- test binaries, benchmark tools, alternate library flavours -- and
+pays for all of them on every build. Forcing the dependency's own `BUILD_TESTS`-style knobs off via
+`OPTIONS` covers the targets a dependency thought to make optional; `EXCLUDE_FROM_ALL` covers the
+rest.
+
+Two consequences are worth knowing, because both are silent:
+
+- **A target nothing links is never built, so it is never compile-checked either.** If a
+  dependency's target is reached only indirectly -- a tool invoked from a custom command, a plugin
+  loaded at runtime, or a library you are actively developing but have not linked yet -- give it an
+  explicit dependency edge or pass `INCLUDE_IN_ALL`.
+- **CMake also skips the subdirectory's `install()` rules.** If you relied on a bundled dependency
+  installing its headers and libraries alongside the parent project, pass `INCLUDE_IN_ALL`. For most
+  projects this is the desired behaviour and its absence was the bug: a static link against a
+  bundled dependency has no reason to publish that dependency's headers into your install prefix.
+
+`EXCLUDE_FROM_ALL` is applied independently of `SUBDIR_ARGS`, so overriding the `add_subdirectory`
+arguments does not silently opt back into `ALL`, and passing `EXCLUDE_FROM_ALL` yourself is a no-op
+rather than a duplicate argument.
 
 For dependencies whose bundled path isn't a plain `add_subdirectory` (e.g. `include()`-based or
 ExternalProject builds), branch by hand on the `${name}_USE_SYSTEM` signal (or query it with
@@ -292,7 +318,7 @@ CmDepTargetLinkLibrary(my_server PRIVATE LibreSSL::TLS LibreSSL::SSL LibreSSL::C
 | `CmDepFetch()` | Fetch all packages listed in `CMDEP_PACKAGES_FILE` |
 | `CmDepFetchPackage(name version url hash)` | Download and extract an archive; auto-declare per-dep override + `USE_SYSTEM` knobs |
 | `CmDepFetchFile(name version url dest_name hash)` | Download a single file |
-| `CmDepAddPackage(name [CONFIG] [PACKAGE p] [OPTIONS …] [SUBDIR_ARGS …] [SKIP_IF_TARGET t] [PUBLIC_INCLUDE d] [NO_SYSTEM_FIND])` | Own the find_package-vs-add_subdirectory branch for a fetched dep |
+| `CmDepAddPackage(name [CONFIG] [PACKAGE p] [OPTIONS …] [SUBDIR_ARGS …] [SKIP_IF_TARGET t] [PUBLIC_INCLUDE d] [NO_SYSTEM_FIND] [INCLUDE_IN_ALL])` | Own the find_package-vs-add_subdirectory branch for a fetched dep. Bundled adds are `SYSTEM EXCLUDE_FROM_ALL` unless `INCLUDE_IN_ALL` |
 | `CmDepUseSystem(name out_var)` | Query whether the system copy of `name` was requested |
 | `CmDepBuildExternal(name version source_dir args targets)` | Build a dependency via ExternalProject |
 | `CmDepTargetLinkLibrary(target scope targets...)` | Link against external and regular targets |
