@@ -13,16 +13,91 @@ function(_CmDepProjectPrefix out_var)
     set(${out_var} "${_p}" PARENT_SCOPE)
 endfunction()
 
+# ---------------------------------------------------------------------------
+# Settings
+#
+# Machine-level settings (where the cache lives, which mirrors to use) are read
+# with this precedence, first hit wins:
+#   1. CMake variable   (-DCMDEP_MIRRORS=... or set() before the fetch)
+#   2. environment      ($ENV{CMDEP_MIRRORS})
+#   3. user config file ($CMDEP_CONFIG, else $XDG_CONFIG_HOME/cmake-dep/config.cmake,
+#                        else ~/.config/cmake-dep/config.cmake,
+#                        %APPDATA%/cmake-dep/config.cmake on Windows)
+#   4. built-in default
+# An empty value at any level means "use the default".
+# ---------------------------------------------------------------------------
+function(_CmDepConfigFile out_var)
+    if (DEFINED ENV{CMDEP_CONFIG} AND NOT "$ENV{CMDEP_CONFIG}" STREQUAL "")
+        set(_f "$ENV{CMDEP_CONFIG}")
+    elseif (DEFINED ENV{XDG_CONFIG_HOME} AND NOT "$ENV{XDG_CONFIG_HOME}" STREQUAL "")
+        set(_f "$ENV{XDG_CONFIG_HOME}/cmake-dep/config.cmake")
+    elseif (WIN32 AND DEFINED ENV{APPDATA})
+        set(_f "$ENV{APPDATA}/cmake-dep/config.cmake")
+    elseif (DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
+        set(_f "$ENV{HOME}/.config/cmake-dep/config.cmake")
+    else ()
+        set(_f "")
+    endif ()
+    if (_f)
+        file(TO_CMAKE_PATH "${_f}" _f)
+    endif ()
+    set(${out_var} "${_f}" PARENT_SCOPE)
+endfunction()
+
+# Loads the user config file once per CMake run. Values are captured into
+# global properties so they rank below CMake/env variables (see _CmDepSetting).
+function(_CmDepLoadConfig)
+    get_property(_loaded GLOBAL PROPERTY CMDEP_CONFIG_LOADED)
+    if (_loaded)
+        return()
+    endif ()
+    set_property(GLOBAL PROPERTY CMDEP_CONFIG_LOADED TRUE)
+    _CmDepConfigFile(_file)
+    if (NOT _file OR NOT EXISTS "${_file}")
+        return()
+    endif ()
+    set(_keys CMDEP_DIR CMDEP_MIRRORS CMDEP_MIRROR_PUSH CMDEP_KEEP_ARCHIVES
+              CMDEP_MIRROR_TIMEOUT CMDEP_MIRROR_HTTPHEADER)
+    # Sentinel-fill so we only capture what the file itself sets, not values
+    # inherited from the calling scope.
+    foreach (_k IN LISTS _keys)
+        set(${_k} "__cmdep_unset__")
+    endforeach ()
+    include("${_file}")
+    foreach (_k IN LISTS _keys)
+        if (NOT "${${_k}}" STREQUAL "__cmdep_unset__")
+            set_property(GLOBAL PROPERTY CMDEP_CONFIG_${_k} "${${_k}}")
+        endif ()
+    endforeach ()
+endfunction()
+
+function(_CmDepSetting out_var name default)
+    _CmDepLoadConfig()
+    get_property(_has_cfg GLOBAL PROPERTY CMDEP_CONFIG_${name} SET)
+    if (DEFINED ${name})
+        set(_v "${${name}}")
+    elseif (DEFINED ENV{${name}})
+        set(_v "$ENV{${name}}")
+    elseif (_has_cfg)
+        get_property(_v GLOBAL PROPERTY CMDEP_CONFIG_${name})
+    else ()
+        set(_v "")
+    endif ()
+    if ("${_v}" STREQUAL "")
+        set(_v "${default}")
+    endif ()
+    set(${out_var} "${_v}" PARENT_SCOPE)
+endfunction()
+
 # Where fetched sources live. Defaults to a per-user cache shared by every
 # project, checkout and worktree:
-#   CMDEP_DIR (CMake variable)  >  $ENV{CMDEP_DIR}  >  $XDG_CACHE_HOME/cmake-dep
+#   CMDEP_DIR (variable > env > config file)  >  $XDG_CACHE_HOME/cmake-dep
 #   > ~/.cache/cmake-dep  (%LOCALAPPDATA%/cmake-dep on Windows)
 # A relative CMDEP_DIR is resolved against the project root.
 function(CmDepCacheDir out_var)
-    if (DEFINED CMDEP_DIR AND NOT CMDEP_DIR STREQUAL "")
-        set(_dir "${CMDEP_DIR}")
-    elseif (DEFINED ENV{CMDEP_DIR} AND NOT "$ENV{CMDEP_DIR}" STREQUAL "")
-        set(_dir "$ENV{CMDEP_DIR}")
+    _CmDepSetting(_dir CMDEP_DIR "")
+    if (NOT _dir STREQUAL "")
+        # explicit
     elseif (DEFINED ENV{XDG_CACHE_HOME} AND NOT "$ENV{XDG_CACHE_HOME}" STREQUAL "")
         set(_dir "$ENV{XDG_CACHE_HOME}/cmake-dep")
     elseif (WIN32 AND DEFINED ENV{LOCALAPPDATA})
@@ -45,11 +120,295 @@ function(CmDepCacheDir out_var)
     set(${out_var} "${_dir}" PARENT_SCOPE)
 endfunction()
 
-# The single fetch path. Downloads <url> (verified against <url_hash>, ALGO=HEX)
-# into <cache>/<name>-<version>-<hash12>/ and returns that directory in out_var.
+# ---------------------------------------------------------------------------
+# Mirrors
+#
+# A mirror is content-addressed: the archive with hash ALGO=HEX lives at
+# <mirror>/<algo>/<hex> (algo lowercased, e.g. sha256/27e55cf7...). Because
+# every blob is hash-verified locally, a mirror need not be trusted.
+#
+# CMDEP_MIRRORS is an ordered list (';' or ',' separated) of mirror bases,
+# file:// URLs, plain directory paths, http(s):// URLs, and the keyword
+# `direct` (the package's own upstream URL). Default: `direct`. Leaving
+# `direct` out makes the mirrors the only allowed sources.
+# ---------------------------------------------------------------------------
+function(_CmDepMirrorList out_var)
+    _CmDepSetting(_m CMDEP_MIRRORS "direct")
+    string(REPLACE "," ";" _m "${_m}")
+    set(_out "")
+    foreach (_e IN LISTS _m)
+        string(STRIP "${_e}" _e)
+        if (_e STREQUAL "")
+            continue()
+        endif ()
+        if (NOT _e STREQUAL "direct")
+            string(REGEX REPLACE "/+$" "" _e "${_e}")
+        endif ()
+        list(APPEND _out "${_e}")
+    endforeach ()
+    set(${out_var} "${_out}" PARENT_SCOPE)
+endfunction()
+
+# Sets out_var to the local directory for a file:// URL or plain path, or ""
+# for a network URL.
+function(_CmDepLocalPath out_var location)
+    if (location MATCHES "^file://(.*)$")
+        set(_p "${CMAKE_MATCH_1}")
+        if (_p MATCHES "^/([A-Za-z]:.*)$")  # file:///C:/x -> C:/x
+            set(_p "${CMAKE_MATCH_1}")
+        endif ()
+    elseif (location MATCHES "^[A-Za-z][A-Za-z0-9+.-]+://")
+        set(_p "")
+    else ()
+        set(_p "${location}")
+    endif ()
+    set(${out_var} "${_p}" PARENT_SCOPE)
+endfunction()
+
+# Copy (or, with MOVE, rename -- same filesystem only) src to dest so that dest
+# appears atomically: readers of a shared mirror never see a partial file.
+# Best effort: sets out_ok instead of failing, since pushing to a mirror must
+# never break a build.
+function(_CmDepPublishBlob out_ok src dest)
+    cmake_parse_arguments(PARSE_ARGV 3 _P "MOVE" "" "")
+    get_filename_component(_dir "${dest}" DIRECTORY)
+    execute_process(COMMAND ${CMAKE_COMMAND} -E make_directory "${_dir}"
+        RESULT_VARIABLE _r OUTPUT_QUIET ERROR_QUIET)
+    if (NOT _r EQUAL 0)
+        set(${out_ok} FALSE PARENT_SCOPE)
+        return()
+    endif ()
+    if (_P_MOVE)
+        execute_process(COMMAND ${CMAKE_COMMAND} -E rename "${src}" "${dest}"
+            RESULT_VARIABLE _r OUTPUT_QUIET ERROR_QUIET)
+    else ()
+        string(RANDOM LENGTH 10 _rand)
+        set(_part "${dest}.part-${_rand}")
+        execute_process(COMMAND ${CMAKE_COMMAND} -E copy "${src}" "${_part}"
+            RESULT_VARIABLE _r OUTPUT_QUIET ERROR_QUIET)
+        if (_r EQUAL 0)
+            execute_process(COMMAND ${CMAKE_COMMAND} -E rename "${_part}" "${dest}"
+                RESULT_VARIABLE _r OUTPUT_QUIET ERROR_QUIET)
+        endif ()
+        if (NOT _r EQUAL 0)
+            file(REMOVE "${_part}")
+        endif ()
+    endif ()
+    if (_r EQUAL 0)
+        set(${out_ok} TRUE PARENT_SCOPE)
+    else ()
+        set(${out_ok} FALSE PARENT_SCOPE)
+    endif ()
+endfunction()
+
+# Tries one source. out_status is one of:
+#   OK    dest holds the verified blob
+#   MISS  the source does not have it (missing file, HTTP error such as 404)
+#   DEAD  the source could not be reached (connection/timeout error)
+#   BAD   the source returned content with the wrong hash
+function(_CmDepTryFetch out_status out_msg location dest algo hex is_mirror)
+    file(REMOVE "${dest}")
+    _CmDepLocalPath(_local "${location}")
+    if (_local)
+        if (NOT EXISTS "${_local}")
+            set(${out_status} MISS PARENT_SCOPE)
+            set(${out_msg} "not present" PARENT_SCOPE)
+            return()
+        endif ()
+        execute_process(COMMAND ${CMAKE_COMMAND} -E copy "${_local}" "${dest}"
+            RESULT_VARIABLE _r OUTPUT_QUIET ERROR_VARIABLE _err)
+        if (NOT _r EQUAL 0)
+            set(${out_status} DEAD PARENT_SCOPE)
+            set(${out_msg} "copy failed: ${_err}" PARENT_SCOPE)
+            return()
+        endif ()
+    else ()
+        set(_opts STATUS _s)
+        if (is_mirror)
+            _CmDepSetting(_timeout CMDEP_MIRROR_TIMEOUT 10)
+            list(APPEND _opts INACTIVITY_TIMEOUT ${_timeout} NETRC OPTIONAL)
+            # Mirror credentials only ever go to mirrors, never upstream.
+            _CmDepSetting(_hdr CMDEP_MIRROR_HTTPHEADER "")
+            if (_hdr)
+                list(APPEND _opts HTTPHEADER "${_hdr}")
+            endif ()
+        endif ()
+        file(DOWNLOAD "${location}" "${dest}" ${_opts})
+        list(GET _s 0 _code)
+        if (NOT _code EQUAL 0)
+            list(GET _s 1 _err)
+            file(REMOVE "${dest}")
+            set(${out_msg} "${_err}" PARENT_SCOPE)
+            if (_code EQUAL 22)  # CURLE_HTTP_RETURNED_ERROR (404, 403, ...)
+                set(${out_status} MISS PARENT_SCOPE)
+            else ()
+                set(${out_status} DEAD PARENT_SCOPE)
+            endif ()
+            return()
+        endif ()
+    endif ()
+    file(${algo} "${dest}" _actual)
+    if (NOT _actual STREQUAL hex)
+        file(REMOVE "${dest}")
+        set(${out_status} BAD PARENT_SCOPE)
+        set(${out_msg} "${algo} mismatch (expected ${hex}, got ${_actual})" PARENT_SCOPE)
+        return()
+    endif ()
+    set(${out_status} OK PARENT_SCOPE)
+    set(${out_msg} "" PARENT_SCOPE)
+endfunction()
+
+# Obtains a verified copy of blob <algo>/<hex>. Looks in the local archive
+# store first, then each CMDEP_MIRRORS entry in order (`direct` = <url>).
+# Sets out_path to the verified file -- the store copy, or <work_dir>/download
+# -- and out_source to "store", the mirror base, or "direct". Fails with the
+# list of every source tried if none has it.
+function(_CmDepAcquire out_path out_source name url algo hex work_dir)
+    CmDepCacheDir(_root)
+    string(TOLOWER "${algo}" _adir)
+    set(_store "${_root}/archives/${_adir}/${hex}")
+    if (EXISTS "${_store}")
+        file(${algo} "${_store}" _actual)
+        if (_actual STREQUAL hex)
+            set(${out_path} "${_store}" PARENT_SCOPE)
+            set(${out_source} "store" PARENT_SCOPE)
+            return()
+        endif ()
+        message(STATUS "cmake-dep: ${name}: archive store copy is corrupt, removing it")
+        file(REMOVE "${_store}")
+    endif ()
+
+    _CmDepMirrorList(_sources)
+    set(_dl "${work_dir}/download")
+    set(_errors "")
+    set(_has_direct FALSE)
+    foreach (_src IN LISTS _sources)
+        if (_src STREQUAL "direct")
+            set(_has_direct TRUE)
+            message(STATUS "cmake-dep: ${name}: downloading ${url}")
+            _CmDepTryFetch(_st _msg "${url}" "${_dl}" ${algo} ${hex} FALSE)
+        else ()
+            get_property(_dead GLOBAL PROPERTY CMDEP_DEAD_MIRRORS)
+            list(FIND _dead "${_src}" _i)
+            if (NOT _i EQUAL -1)
+                list(APPEND _errors "  ${_src}: skipped (unreachable earlier in this run)")
+                continue()
+            endif ()
+            _CmDepTryFetch(_st _msg "${_src}/${_adir}/${hex}" "${_dl}" ${algo} ${hex} TRUE)
+            if (_st STREQUAL "OK")
+                message(STATUS "cmake-dep: ${name}: fetched from mirror ${_src}")
+            elseif (_st STREQUAL "MISS")
+                message(VERBOSE "cmake-dep: ${name}: not on mirror ${_src}")
+            elseif (_st STREQUAL "DEAD")
+                set_property(GLOBAL APPEND PROPERTY CMDEP_DEAD_MIRRORS "${_src}")
+                message(STATUS "cmake-dep: mirror ${_src} unreachable (${_msg}); "
+                               "skipping it for the rest of this run")
+            elseif (_st STREQUAL "BAD")
+                message(STATUS "cmake-dep: ${name}: mirror ${_src} served a corrupt copy (${_msg})")
+            endif ()
+        endif ()
+        if (_st STREQUAL "OK")
+            set(${out_path} "${_dl}" PARENT_SCOPE)
+            set(${out_source} "${_src}" PARENT_SCOPE)
+            return()
+        endif ()
+        list(APPEND _errors "  ${_src}: ${_msg}")
+    endforeach ()
+
+    file(REMOVE_RECURSE "${work_dir}")  # callers pass a dedicated work dir
+    string(REPLACE ";" "\n" _errors "${_errors}")
+    set(_hint "")
+    if (NOT _has_direct)
+        set(_hint "\n  ('direct' is not in CMDEP_MIRRORS, so the upstream URL ${url} was not tried)")
+    endif ()
+    message(FATAL_ERROR "cmake-dep: could not fetch ${name} (${algo}=${hex}) from any source:\n"
+                        "${_errors}${_hint}")
+endfunction()
+
+# Uploads a verified blob to a mirror: a directory/file:// target gets an
+# atomic copy (skipped if already present), an http(s) target gets an HTTP PUT.
+# Never fatal -- a failed push is reported and the build continues.
+function(_CmDepPushTo target blob name algo hex)
+    string(REGEX REPLACE "/+$" "" target "${target}")
+    string(TOLOWER "${algo}" _adir)
+    _CmDepLocalPath(_local "${target}")
+    if (_local)
+        set(_dest "${_local}/${_adir}/${hex}")
+        if (EXISTS "${_dest}")
+            return()
+        endif ()
+        _CmDepPublishBlob(_ok "${blob}" "${_dest}")
+    else ()
+        _CmDepSetting(_timeout CMDEP_MIRROR_TIMEOUT 10)
+        set(_opts STATUS _s INACTIVITY_TIMEOUT ${_timeout} NETRC OPTIONAL)
+        _CmDepSetting(_hdr CMDEP_MIRROR_HTTPHEADER "")
+        if (_hdr)
+            list(APPEND _opts HTTPHEADER "${_hdr}")
+        endif ()
+        file(UPLOAD "${blob}" "${target}/${_adir}/${hex}" ${_opts})
+        list(GET _s 0 _code)
+        if (_code EQUAL 0)
+            set(_ok TRUE)
+        else ()
+            set(_ok FALSE)
+        endif ()
+    endif ()
+    if (_ok)
+        message(STATUS "cmake-dep: ${name}: pushed to mirror ${target}")
+    else ()
+        message(WARNING "cmake-dep: ${name}: could not push to mirror ${target}")
+    endif ()
+endfunction()
+
+# Script-mode helper for CmDepMirror.cmake: make blob <algo>/<hex> present in
+# CMDEP_MIRROR_OUT, fetching it through the normal store/mirror/direct chain.
+function(_CmDepExportBlob name url algo hex)
+    string(TOLOWER "${algo}" _adir)
+    string(REGEX REPLACE "/+$" "" _out "${CMDEP_MIRROR_OUT}")
+    _CmDepLocalPath(_local "${_out}")
+    if (_local)
+        set(_dest "${_local}/${_adir}/${hex}")
+        if (EXISTS "${_dest}")
+            file(${algo} "${_dest}" _actual)
+            if (_actual STREQUAL hex)
+                message(STATUS "cmake-dep: ${name}: already in ${_out}")
+                return()
+            endif ()
+            message(STATUS "cmake-dep: ${name}: corrupt copy in ${_out}, replacing")
+            file(REMOVE "${_dest}")
+        endif ()
+    endif ()
+
+    CmDepCacheDir(_root)
+    file(MAKE_DIRECTORY "${_root}/.locks" "${_root}/.tmp")
+    set(_lock "${_root}/.locks/blob-${hex}.lock")
+    file(LOCK "${_lock}" GUARD FUNCTION)
+    set(_work "${_root}/.tmp/blob-${hex}")
+    file(REMOVE_RECURSE "${_work}")
+    file(MAKE_DIRECTORY "${_work}")
+
+    _CmDepAcquire(_blob _source ${name} "${url}" ${algo} ${hex} "${_work}")
+    _CmDepPushTo("${_out}" "${_blob}" ${name} ${algo} ${hex})
+    _CmDepSetting(_keep CMDEP_KEEP_ARCHIVES ON)
+    if (_keep AND NOT _source STREQUAL "store")
+        _CmDepPublishBlob(_ok "${_blob}" "${_root}/archives/${_adir}/${hex}" MOVE)
+    endif ()
+    file(REMOVE_RECURSE "${_work}")
+    file(LOCK "${_lock}" RELEASE)
+endfunction()
+
+# The single fetch path. Obtains the archive <url> (verified against
+# <url_hash>, ALGO=HEX) and populates <cache>/<name>-<version>-<hash12>/,
+# returning that directory in out_var.
 #
 # KIND ARCHIVE extracts the download (stripping a single top-level directory);
 # KIND FILE stores it as <FILE_NAME>.
+#
+# Where the bytes come from (see _CmDepAcquire): the local archive store
+# (<cache>/archives/<algo>/<hex>), then each CMDEP_MIRRORS entry, where
+# `direct` is <url> itself. After a network fetch the archive is kept in the
+# store (CMDEP_KEEP_ARCHIVES, default ON) and pushed to CMDEP_MIRROR_PUSH if
+# set.
 #
 # Completeness is tracked by a stamp file (.cmake-dep-complete) inside the
 # directory. The directory is assembled in a temp dir, the stamp written last,
@@ -80,8 +439,15 @@ function(_CmDepPopulate out_var name version url url_hash)
     if (_algo_idx EQUAL -1)
         message(FATAL_ERROR "cmake-dep: unsupported hash algorithm '${_algo}' for '${name}'")
     endif ()
-    string(SUBSTRING "${_hex}" 0 12 _short)
 
+    # Mirror population mode (CmDepMirror.cmake): only collect the archive.
+    if (CMDEP_MIRROR_OUT)
+        _CmDepExportBlob(${name} "${url}" ${_algo} ${_hex})
+        set(${out_var} "" PARENT_SCOPE)
+        return()
+    endif ()
+
+    string(SUBSTRING "${_hex}" 0 12 _short)
     CmDepCacheDir(_root)
     set(_entry "${name}-${version}-${_short}")
     set(_dest "${_root}/${_entry}")
@@ -116,40 +482,40 @@ function(_CmDepPopulate out_var name version url url_hash)
     file(REMOVE_RECURSE "${_tmp}")
     file(MAKE_DIRECTORY "${_tmp}")
 
-    if (_P_KIND STREQUAL "FILE")
-        set(_download "${_tmp}/content/${_P_FILE_NAME}")
-    else ()
-        string(REGEX REPLACE "[?#].*$" "" _url_path "${url}")
-        string(REGEX MATCH "[^/]+$" _archive_name "${_url_path}")
-        if (NOT _archive_name)
-            set(_archive_name "archive")
-        endif ()
-        set(_download "${_tmp}/${_archive_name}")
+    _CmDepAcquire(_blob _source ${name} "${url}" ${_algo} ${_hex} "${_tmp}")
+
+    _CmDepSetting(_push CMDEP_MIRROR_PUSH "")
+    string(REGEX REPLACE "/+$" "" _push "${_push}")
+    if (_push AND NOT _source STREQUAL "store" AND NOT _source STREQUAL _push)
+        _CmDepPushTo("${_push}" "${_blob}" ${name} ${_algo} ${_hex})
     endif ()
 
-    # The hash is checked by hand rather than with EXPECTED_HASH, which raises
-    # its own error on mismatch and would skip the temp-dir cleanup.
-    message(STATUS "cmake-dep: ${_entry}: downloading ${url}")
-    file(DOWNLOAD "${url}" "${_download}" STATUS _status)
-    list(GET _status 0 _code)
-    if (NOT _code EQUAL 0)
-        list(GET _status 1 _msg)
-        file(REMOVE_RECURSE "${_tmp}")
-        message(FATAL_ERROR "cmake-dep: download failed for ${name} (${url}): ${_msg}")
-    endif ()
-    file(${_algo} "${_download}" _actual)
-    if (NOT _actual STREQUAL _hex)
-        file(REMOVE_RECURSE "${_tmp}")
-        message(FATAL_ERROR "cmake-dep: ${_algo} mismatch for ${name} (${url})\n"
-                            "  expected: ${_hex}\n  actual:   ${_actual}")
-    endif ()
+    _CmDepSetting(_keep CMDEP_KEEP_ARCHIVES ON)
+    string(TOLOWER "${_algo}" _adir)
+    set(_store "${_root}/archives/${_adir}/${_hex}")
 
     if (_P_KIND STREQUAL "FILE")
         set(_content "${_tmp}/content")
+        file(MAKE_DIRECTORY "${_content}")
+        if (_source STREQUAL "store")
+            execute_process(COMMAND ${CMAKE_COMMAND} -E copy "${_blob}" "${_content}/${_P_FILE_NAME}"
+                RESULT_VARIABLE _r)
+            if (NOT _r EQUAL 0)
+                message(FATAL_ERROR "cmake-dep: ${_entry}: could not copy ${_blob}")
+            endif ()
+        else ()
+            if (_keep)
+                _CmDepPublishBlob(_ok "${_blob}" "${_store}")
+            endif ()
+            file(RENAME "${_blob}" "${_content}/${_P_FILE_NAME}")
+        endif ()
     else ()
         set(_extract "${_tmp}/extract")
         file(MAKE_DIRECTORY "${_extract}")
-        file(ARCHIVE_EXTRACT INPUT "${_download}" DESTINATION "${_extract}")
+        file(ARCHIVE_EXTRACT INPUT "${_blob}" DESTINATION "${_extract}")
+        if (_keep AND NOT _source STREQUAL "store")
+            _CmDepPublishBlob(_ok "${_blob}" "${_store}" MOVE)
+        endif ()
         file(GLOB _children LIST_DIRECTORIES true "${_extract}/*" "${_extract}/.*")
         list(LENGTH _children _n)
         set(_content "${_extract}")
@@ -163,7 +529,7 @@ function(_CmDepPopulate out_var name version url url_hash)
 
     # Stamp last, then publish atomically (same filesystem: .tmp is under _root).
     file(WRITE "${_content}/.cmake-dep-complete"
-        "name=${name}\nversion=${version}\nurl=${url}\nhash=${url_hash}\n")
+        "name=${name}\nversion=${version}\nurl=${url}\nhash=${url_hash}\nsource=${_source}\n")
     file(RENAME "${_content}" "${_dest}")
     file(REMOVE_RECURSE "${_tmp}")
 

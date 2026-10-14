@@ -88,38 +88,39 @@ CmDepFetch()
 
 Sources are downloaded into the shared cache by default. Override with `CMDEP_DIR`.
 
-### The source cache
+### The source cache and mirrors
 
-By default every project, checkout and worktree on the machine shares one source cache, so a
-dependency is downloaded once per machine, not once per checkout. The location is the first of:
+Every project, checkout and worktree on the machine shares one source cache
+(`~/.cache/cmake-dep` by default), so a dependency is downloaded once per machine, not once per
+checkout. Entries are hash-verified, crash-safe (completion stamp + atomic rename) and protected by
+per-entry locks, so concurrent configures never race.
 
-1. `CMDEP_DIR` (CMake variable, e.g. `-DCMDEP_DIR=3rdparty`)
-2. `CMDEP_DIR` (environment variable -- handy for CI)
-3. `$XDG_CACHE_HOME/cmake-dep`
-4. `~/.cache/cmake-dep` (`%LOCALAPPDATA%/cmake-dep` on Windows)
+Before going to the upstream URL, cmake-dep can look for an archive on **mirrors**: a LAN server, a
+file share, Artifactory, anything that serves files. Mirrors are content-addressed
+(`<mirror>/sha256/<hex>`) and every byte is checked against the pinned hash, so a mirror doesn't
+need to be trusted.
 
-A relative `CMDEP_DIR` is resolved against the project root, so `-DCMDEP_DIR=3rdparty` restores a
-per-project vendor directory.
+```cmake
+# ~/.config/cmake-dep/config.cmake -- once per machine, applies to every project
+set(CMDEP_MIRRORS "https://cmdep.lan.example.com,direct")    # leave out `direct` for air-gapped
+set(CMDEP_MIRROR_PUSH "https://cmdep.lan.example.com")       # optional: fill the mirror on miss
+```
 
-Each entry is `<name>-<version>-<hash12>`, where `<hash12>` is the first 12 hex digits of the
-archive hash. Two projects pinning the same version to different archives (or a `-D…_URL` /
-`-D…_SHA256` override) therefore get separate entries and never clobber each other.
+```
+lookup order:  extracted tree  >  local archive store  >  CMDEP_MIRRORS in order (`direct` = upstream URL)
+```
 
-The cache is safe to share between concurrent configures:
+Downloaded archives are kept in `~/.cache/cmake-dep/archives/sha256/<hex>`, which already has the
+mirror layout: `rsync -a ~/.cache/cmake-dep/archives/ mirror:/srv/cmake-dep-mirror/` populates a
+mirror. `cmake/CmDepMirror.cmake` does the same from a packages file.
 
-- **Completion stamp.** Every entry contains a `.cmake-dep-complete` file. An entry is assembled
-  in `<cache>/.tmp/`, the stamp is written last, and only then is the directory renamed into place.
-  An entry without a stamp is a leftover from an interrupted fetch: it is removed and fetched again.
-  If the stamp is somehow missing after a fetch, configure fails rather than looping.
-- **Locking.** All changes to an entry happen under a per-entry `file(LOCK)` in `<cache>/.locks/`.
-  A second configure that needs the same entry waits (`waiting for another process…`) and then
-  uses the finished result; entries that are already complete are read without taking the lock.
-- **Hash verification.** The archive's hash is checked before extraction; a mismatch fails the
-  configure and leaves nothing behind.
+**Full guide: [docs/caching-and-mirrors.md](docs/caching-and-mirrors.md)**, covering cache layout,
+mirror setup, authentication, populating mirrors, settings precedence, the security model and
+troubleshooting. Ready-made config files, server setups (nginx, Artifactory, Nexus, S3) and CI
+workflows are in [`examples/`](examples).
 
 Because the cache is shared, treat entries as read-only: build out of source (`CmDepAddPackage`
-and `CmDepBuildExternal` both do) and don't patch fetched sources in place. To clear the cache,
-delete the directory.
+and `CmDepBuildExternal` both do) and don't patch fetched sources in place.
 
 ### 3. Use the fetched sources
 
@@ -307,8 +308,21 @@ cmake -P CMake/FetchDependencies.cmake
 ```
 
 This downloads all packages without running a full configure, using the same fetch path,
-cache and locking as a configure -- so a pre-fetch is a cache hit at configure time. CI can cache
-the source cache directory (or set `CMDEP_DIR` to a cached path) independently from the build.
+cache, mirrors and locking as a configure -- so a pre-fetch is a cache hit at configure time. CI can
+cache `~/.cache/cmake-dep/archives` (or set `CMDEP_DIR` to a cached path) independently from the
+build; see [`examples/ci/github-actions.yml`](examples/ci/github-actions.yml).
+
+## Populating a Mirror
+
+```bash
+cmake -DCMDEP_PACKAGES_FILE=CMake/3rdPartyPackages.cmake \
+      -DCMDEP_MIRROR_OUT=/srv/cmake-dep-mirror \
+      -P path/to/cmake-dep/cmake/CmDepMirror.cmake
+```
+
+Copies every archive the packages file pins into the mirror (a directory, `file://` URL, or an
+HTTP(S) URL that accepts PUT), taking each from the local archive store when possible. See
+[Populating a mirror](docs/caching-and-mirrors.md#populating-a-mirror).
 
 ## Complete Example
 
@@ -359,7 +373,7 @@ CmDepTargetLinkLibrary(my_server PRIVATE LibreSSL::TLS LibreSSL::SSL LibreSSL::C
 | `CmDepFetch()` | Fetch all packages listed in `CMDEP_PACKAGES_FILE` |
 | `CmDepFetchPackage(name version url hash)` | Download and extract an archive; auto-declare per-dep override + `USE_SYSTEM` knobs |
 | `CmDepFetchFile(name version url dest_name hash)` | Download a single file |
-| `CmDepAddPackage(name [CONFIG] [PACKAGE p] [OPTIONS …] [SUBDIR_ARGS …] [SKIP_IF_TARGET t] [PUBLIC_INCLUDE d] [NO_SYSTEM_FIND] [INCLUDE_IN_ALL])` | Own the find_package-vs-add_subdirectory branch for a fetched dep. Bundled adds are `SYSTEM EXCLUDE_FROM_ALL` unless `INCLUDE_IN_ALL` |
+| `CmDepAddPackage(name [CONFIG] [PACKAGE p] [OPTIONS …] [SUBDIR_ARGS …] [SKIP_IF_TARGET t] [PUBLIC_INCLUDE d] [BINARY_DIR d] [NO_SYSTEM_FIND] [INCLUDE_IN_ALL])` | Own the find_package-vs-add_subdirectory branch for a fetched dep. Bundled adds are `SYSTEM EXCLUDE_FROM_ALL` unless `INCLUDE_IN_ALL` |
 | `CmDepUseSystem(name out_var)` | Query whether the system copy of `name` was requested |
 | `CmDepBuildExternal(name version source_dir args targets)` | Build a dependency via ExternalProject |
 | `CmDepTargetLinkLibrary(target scope targets...)` | Link against external and regular targets |
@@ -367,18 +381,37 @@ CmDepTargetLinkLibrary(my_server PRIVATE LibreSSL::TLS LibreSSL::SSL LibreSSL::C
 | `CmDepFetchSetup(project_root packages_file)` | Standalone fetch (for `cmake -P` scripts) |
 | `CmDepCacheDir(out_var)` | Resolve the source cache directory |
 
+### Scripts (`cmake -P`)
+
+| Script | Description |
+|---|---|
+| `cmake/CmDepFetchDependencies.cmake` | Fetch everything in `CMDEP_PACKAGES_FILE` without a configure |
+| `cmake/CmDepMirror.cmake` | Copy everything in `CMDEP_PACKAGES_FILE` into the mirror `CMDEP_MIRROR_OUT` |
+
 ### Variables
 
 | Variable | Default | Description |
 |---|---|---|
 | `CMDEP_PACKAGES_FILE` | *(required)* | Path to your packages definition file |
-| `CMDEP_DIR` | `$ENV{CMDEP_DIR}`, else `~/.cache/cmake-dep` | Where to store fetched sources (relative paths resolve against the project root) |
 | `CMDEP_PROJECT` | `${PROJECT_NAME}` | Prefix (uppercased) for the auto-declared `<PREFIX>_<DEP>_*` / `<PREFIX>_USE_SYSTEM_<DEP>` knobs |
+
+Machine-level settings. Each can be a CMake variable, an environment variable, or a line in the user
+config file `~/.config/cmake-dep/config.cmake`, in that order of precedence
+([details](docs/caching-and-mirrors.md#settings-reference)):
+
+| Setting | Default | Description |
+|---|---|---|
+| `CMDEP_DIR` | `~/.cache/cmake-dep` | Local cache root (relative paths resolve against the project root) |
+| `CMDEP_MIRRORS` | `direct` | Ordered sources, `,`- or `;`-separated: mirror URLs/paths and `direct` (the upstream URL) |
+| `CMDEP_MIRROR_PUSH` | *(none)* | Mirror to upload newly downloaded archives to |
+| `CMDEP_KEEP_ARCHIVES` | `ON` | Keep downloaded archives in `<cache>/archives/<algo>/<hex>` |
+| `CMDEP_MIRROR_TIMEOUT` | `10` | Inactivity timeout (seconds) for mirror requests |
+| `CMDEP_MIRROR_HTTPHEADER` | *(none)* | HTTP header sent to mirrors only (e.g. `Authorization: Bearer …`) |
 
 ## Requirements
 
 - CMake 3.18 or later
-- A working internet connection for initial fetches (sources are cached in `~/.cache/cmake-dep`)
+- A working internet connection for initial fetches, or a mirror (sources are cached in `~/.cache/cmake-dep`)
 
 ## Tests
 
@@ -386,9 +419,12 @@ CmDepTargetLinkLibrary(my_server PRIVATE LibreSSL::TLS LibreSSL::SSL LibreSSL::C
 cmake -P tests/CmDepFetchTest.cmake
 ```
 
-Runs offline against `file://` archives and covers fresh fetch, cache hits, recovery from partial
-entries and stale temp dirs, hash mismatches, overrides, locking and concurrent fetchers, and
-configure mode.
+Needs no internet access: it uses `file://` archives and, if `python3` is available, a small HTTP
+mirror on `127.0.0.1` ([`tests/mirror_server.py`](tests/mirror_server.py)). It covers fresh
+fetches, cache hits, recovery from partial entries, hash mismatches, overrides, locking and
+concurrent fetchers, configure mode, the archive store, mirror fallback order (missing/corrupt/
+unreachable mirrors), mirrors-only mode, write-back to directory and HTTP mirrors, mirror
+authentication (and that it never reaches upstream), settings precedence, and `CmDepMirror.cmake`.
 
 ## License
 

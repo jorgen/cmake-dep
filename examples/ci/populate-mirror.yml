@@ -1,0 +1,30 @@
+# Example GitHub Actions workflow that keeps a team mirror in sync with the
+# packages file. Runs when the packages file changes on main, or by hand.
+#
+# Needs a mirror that accepts HTTP PUT (nginx WebDAV, Artifactory, Nexus, ...)
+# and a token in the MIRROR_TOKEN secret. See examples/mirror-servers/.
+
+name: populate cmake-dep mirror
+
+on:
+  push:
+    branches: [main]
+    paths: ['CMake/3rdPartyPackages.cmake']
+  workflow_dispatch:
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get cmake-dep
+        run: git clone --depth 1 https://github.com/jorgen/cmake-dep.git "$RUNNER_TEMP/cmake-dep"
+
+      - name: Upload every pinned archive to the mirror
+        env:
+          CMDEP_MIRROR_HTTPHEADER: "Authorization: Bearer ${{ secrets.MIRROR_TOKEN }}"
+        run: |
+          cmake -DCMDEP_PACKAGES_FILE=CMake/3rdPartyPackages.cmake \
+                -DCMDEP_MIRROR_OUT=https://cmdep.example.com \
+                -P "$RUNNER_TEMP/cmake-dep/cmake/CmDepMirror.cmake"

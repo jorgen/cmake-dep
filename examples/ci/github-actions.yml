@@ -1,0 +1,39 @@
+# Example GitHub Actions workflow for a project using cmake-dep.
+#
+# Caches only the archive store (~/.cache/cmake-dep/archives): it is smaller
+# than the extracted trees, and cmake-dep rebuilds the trees from it offline.
+# The key changes whenever the packages file (the pinned hashes) changes.
+
+name: build
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      # Same path on every OS keeps the cache step simple.
+      CMDEP_DIR: ${{ github.workspace }}/../cmake-dep-cache
+      # Optional: read from the team mirror first, then upstream.
+      # CMDEP_MIRRORS: https://cmdep.example.com,direct
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore cmake-dep archives
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/../cmake-dep-cache/archives
+          key: cmake-dep-${{ runner.os }}-${{ hashFiles('CMake/3rdPartyPackages.cmake') }}
+          restore-keys: cmake-dep-${{ runner.os }}-
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure

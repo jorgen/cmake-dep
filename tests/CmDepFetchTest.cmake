@@ -1,7 +1,8 @@
 # Offline tests for the cmake-dep fetch path. Run with:
 #   cmake -P tests/CmDepFetchTest.cmake
 #
-# Uses file:// archives in a scratch directory, so no network is needed.
+# Uses file:// archives and (if python3 is available) a local HTTP server on
+# 127.0.0.1, so no internet access is needed.
 cmake_minimum_required(VERSION 3.18)
 
 get_filename_component(_repo "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
@@ -11,40 +12,14 @@ endif ()
 file(REMOVE_RECURSE "${WORK_DIR}")
 file(MAKE_DIRECTORY "${WORK_DIR}")
 
-set(_failures 0)
-macro(check cond msg)
-    cmake_language(EVAL CODE "if (${cond})\n set(_chk TRUE)\nelse ()\n set(_chk FALSE)\nendif ()")
-    if (_chk)
-        message(STATUS "PASS: ${msg}")
-    else ()
-        message(STATUS "FAIL: ${msg}")
-        math(EXPR _failures "${_failures} + 1")
-    endif ()
-endmacro()
+set(CACHE_DIR "${WORK_DIR}/cache")
+include("${CMAKE_CURRENT_LIST_DIR}/CmDepTestHelpers.cmake")
 
 # --- fixtures --------------------------------------------------------------
-function(make_archive out_path out_hash top content)
-    set(_src "${WORK_DIR}/src/${top}")
-    file(MAKE_DIRECTORY "${_src}/sub")
-    file(WRITE "${_src}/CMakeLists.txt" "${content}")
-    file(WRITE "${_src}/.hidden" "x")
-    file(WRITE "${_src}/sub/a.txt" "a")
-    set(_tgz "${WORK_DIR}/${top}.tar.gz")
-    execute_process(COMMAND ${CMAKE_COMMAND} -E tar czf "${_tgz}" "${top}"
-        WORKING_DIRECTORY "${WORK_DIR}/src" RESULT_VARIABLE _r)
-    if (NOT _r EQUAL 0)
-        message(FATAL_ERROR "tar failed")
-    endif ()
-    file(SHA256 "${_tgz}" _h)
-    set(${out_path} "${_tgz}" PARENT_SCOPE)
-    set(${out_hash} "${_h}" PARENT_SCOPE)
-endfunction()
-
 make_archive(TGZ1 H1 "dep-1.0" "add_library(dep INTERFACE)\n")
 make_archive(TGZ2 H2 "dep-1.0-patched" "add_library(dep INTERFACE)\n# patched\n")
 string(SUBSTRING "${H1}" 0 12 S1)
 string(SUBSTRING "${H2}" 0 12 S2)
-set(CACHE_DIR "${WORK_DIR}/cache")
 
 file(WRITE "${WORK_DIR}/packages.cmake"
     "CmDepFetchPackage(dep 1.0 \"file://${TGZ1}\" SHA256=${H1})\n")
@@ -52,15 +27,6 @@ file(WRITE "${WORK_DIR}/bad-packages.cmake"
     "CmDepFetchPackage(bad 1.0 \"file://${TGZ1}\" SHA256=0000000000000000000000000000000000000000000000000000000000000000)\n")
 file(WRITE "${WORK_DIR}/file-packages.cmake"
     "CmDepFetchFile(single 1.0 \"file://${TGZ1}\" renamed.tgz SHA256=${H1})\n")
-
-function(run_fetch out_rc out_log)
-    execute_process(
-        COMMAND ${CMAKE_COMMAND} -DCMDEP_DIR=${CACHE_DIR} -DCMDEP_PROJECT=proj ${ARGN}
-                -P "${_repo}/cmake/CmDepFetchDependencies.cmake"
-        RESULT_VARIABLE _rc OUTPUT_VARIABLE _out ERROR_VARIABLE _err)
-    set(${out_rc} "${_rc}" PARENT_SCOPE)
-    set(${out_log} "${_out}${_err}" PARENT_SCOPE)
-endfunction()
 
 set(D1 "${CACHE_DIR}/dep-1.0-${S1}")
 
@@ -209,6 +175,161 @@ execute_process(
             -DCMDEP_PROJECT_ROOT=${_proj} -P "${_repo}/cmake/CmDepFetchDependencies.cmake"
     RESULT_VARIABLE rc OUTPUT_QUIET ERROR_QUIET)
 check("rc EQUAL 0 AND EXISTS \"${_proj}/3rdparty/dep-1.0-${S1}/.cmake-dep-complete\"" "relative CMDEP_DIR (env) resolves against project root")
+
+# ===========================================================================
+# Mirrors, archive store, write-back, config file
+# ===========================================================================
+set(BOGUS_URL "file://${WORK_DIR}/does-not-exist.tar.gz")
+file(WRITE "${WORK_DIR}/bogus-packages.cmake"
+    "CmDepFetchPackage(dep 1.0 \"${BOGUS_URL}\" SHA256=${H1})\n")
+file(WRITE "${WORK_DIR}/two-packages.cmake"
+    "CmDepFetchPackage(dep 1.0 \"file://${TGZ1}\" SHA256=${H1})\n"
+    "CmDepFetchPackage(dep2 1.0 \"file://${TGZ2}\" SHA256=${H2})\n")
+set(M_EMPTY "${WORK_DIR}/mirror-empty")
+set(M_BAD "${WORK_DIR}/mirror-bad")
+set(M_GOOD "${WORK_DIR}/mirror-good")
+set(M_PUSH "${WORK_DIR}/mirror-push")
+file(MAKE_DIRECTORY "${M_EMPTY}" "${M_BAD}/sha256" "${M_GOOD}/sha256")
+file(WRITE "${M_BAD}/sha256/${H1}" "this is not the archive")
+configure_file("${TGZ1}" "${M_GOOD}/sha256/${H1}" COPYONLY)
+set(STORE1 "${CACHE_DIR}/archives/sha256/${H1}")
+
+# --- 13. archive store ------------------------------------------------------
+file(REMOVE_RECURSE "${CACHE_DIR}")
+run_fetch(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/packages.cmake)
+check("rc EQUAL 0 AND EXISTS \"${STORE1}\"" "archive kept in <cache>/archives/sha256/<hex> by default")
+file(REMOVE_RECURSE "${D1}")
+run_fetch(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/bogus-packages.cmake "-DCMDEP_MIRRORS=${M_EMPTY}")
+string(FIND "${log}" "downloading" _dl)
+check("rc EQUAL 0 AND _dl EQUAL -1 AND EXISTS \"${D1}/CMakeLists.txt\"" "extracted tree rebuilt from archive store with no network source")
+file(STRINGS "${D1}/.cmake-dep-complete" _src REGEX "^source=")
+check("_src STREQUAL \"source=store\"" "stamp records source=store")
+
+file(REMOVE_RECURSE "${CACHE_DIR}")
+run_fetch(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/packages.cmake -DCMDEP_KEEP_ARCHIVES=OFF)
+check("rc EQUAL 0 AND NOT EXISTS \"${STORE1}\"" "CMDEP_KEEP_ARCHIVES=OFF keeps no archive")
+
+file(REMOVE_RECURSE "${CACHE_DIR}")
+run_fetch(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/file-packages.cmake)
+check("rc EQUAL 0 AND EXISTS \"${STORE1}\" AND EXISTS \"${CACHE_DIR}/single-1.0-${S1}/renamed.tgz\"" "CmDepFetchFile also fills the archive store")
+
+# --- 14. mirror order: missing -> corrupt -> good ---------------------------
+file(REMOVE_RECURSE "${CACHE_DIR}")
+run_fetch(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/bogus-packages.cmake
+    "-DCMDEP_MIRRORS=${M_EMPTY},file://${M_BAD},file://${M_GOOD}")
+string(FIND "${log}" "served a corrupt copy" _bad)
+string(FIND "${log}" "fetched from mirror file://${M_GOOD}" _good)
+check("rc EQUAL 0 AND EXISTS \"${D1}/CMakeLists.txt\"" "falls through missing and corrupt mirrors to a good one")
+check("NOT _bad EQUAL -1 AND NOT _good EQUAL -1" "corrupt mirror reported, good mirror named")
+
+# --- 15. mirrors-only miss fails with a clear message ----------------------
+file(REMOVE_RECURSE "${CACHE_DIR}")
+run_fetch(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/packages.cmake "-DCMDEP_MIRRORS=${M_EMPTY},file://${M_BAD}")
+string(FIND "${log}" "'direct' is not in CMDEP_MIRRORS" _hint)
+string(FIND "${log}" "${M_EMPTY}: not present" _miss)
+check("NOT rc EQUAL 0 AND NOT _hint EQUAL -1 AND NOT _miss EQUAL -1" "mirrors-only miss fails listing every source tried")
+file(GLOB _left "${CACHE_DIR}/.tmp/*")
+check("NOT _left" "failed fetch leaves no temp dir")
+
+# --- 16. direct as fallback ---------------------------------------------------
+run_fetch(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/packages.cmake "-DCMDEP_MIRRORS=${M_EMPTY},direct")
+check("rc EQUAL 0 AND EXISTS \"${D1}/CMakeLists.txt\"" "'direct' after a missing mirror falls back to upstream")
+
+# --- 17. write-back ---------------------------------------------------------
+file(REMOVE_RECURSE "${CACHE_DIR}" "${M_PUSH}")
+run_fetch(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/packages.cmake "-DCMDEP_MIRROR_PUSH=file://${M_PUSH}")
+file(GLOB _parts "${M_PUSH}/sha256/*.part-*")
+check("rc EQUAL 0 AND EXISTS \"${M_PUSH}/sha256/${H1}\" AND NOT _parts" "fresh download pushed to CMDEP_MIRROR_PUSH")
+file(SHA256 "${M_PUSH}/sha256/${H1}" _ph)
+check("_ph STREQUAL H1" "pushed blob is intact")
+file(REMOVE_RECURSE "${M_PUSH}" "${D1}")
+run_fetch(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/packages.cmake "-DCMDEP_MIRROR_PUSH=${M_PUSH}")
+check("rc EQUAL 0 AND NOT EXISTS \"${M_PUSH}\"" "archive-store hit is not pushed")
+file(REMOVE_RECURSE "${CACHE_DIR}")
+file(WRITE "${WORK_DIR}/ro-file" "")
+run_fetch(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/packages.cmake "-DCMDEP_MIRROR_PUSH=${WORK_DIR}/ro-file/sub")
+string(FIND "${log}" "could not push" _np)
+check("rc EQUAL 0 AND NOT _np EQUAL -1 AND EXISTS \"${D1}/CMakeLists.txt\"" "failed push warns but does not fail the fetch")
+
+# --- 18. user config file and precedence -------------------------------------
+file(REMOVE_RECURSE "${CACHE_DIR}")
+file(WRITE "${WORK_DIR}/user-config.cmake"
+    "set(CMDEP_MIRRORS \"file://${M_GOOD}\")\nset(CMDEP_KEEP_ARCHIVES OFF)\n")
+set(RUN_ENV "CMDEP_CONFIG=${WORK_DIR}/user-config.cmake")
+run_fetch(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/bogus-packages.cmake)
+check("rc EQUAL 0 AND EXISTS \"${D1}/CMakeLists.txt\" AND NOT EXISTS \"${STORE1}\"" "config file supplies CMDEP_MIRRORS and CMDEP_KEEP_ARCHIVES")
+file(REMOVE_RECURSE "${CACHE_DIR}")
+run_fetch(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/bogus-packages.cmake -DCMDEP_MIRRORS=direct)
+check("NOT rc EQUAL 0" "-D variable overrides config file")
+set(RUN_ENV "CMDEP_CONFIG=${WORK_DIR}/user-config.cmake" "CMDEP_MIRRORS=${M_EMPTY}")
+run_fetch(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/bogus-packages.cmake)
+check("NOT rc EQUAL 0" "environment variable overrides config file")
+set(RUN_ENV "")
+
+# --- 19. dead mirror is skipped for the rest of the run -----------------------
+file(REMOVE_RECURSE "${CACHE_DIR}")
+run_fetch(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/two-packages.cmake
+    "-DCMDEP_MIRRORS=http://127.0.0.1:9,direct" -DCMDEP_MIRROR_TIMEOUT=2)
+count_matches(_n "${log}" "unreachable (")
+check("rc EQUAL 0 AND _n EQUAL 1" "unreachable mirror tried once, then skipped (reported ${_n}x)")
+
+# --- 20. CmDepMirror.cmake populates a mirror -------------------------------
+set(M_OUT "${WORK_DIR}/mirror-out")
+file(REMOVE_RECURSE "${CACHE_DIR}" "${M_OUT}")
+run_fetch(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/packages.cmake)  # fills the archive store
+run_mirror(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/bogus-packages.cmake
+    -DCMDEP_MIRROR_OUT=${M_OUT} "-DCMDEP_MIRRORS=${M_EMPTY}")
+check("rc EQUAL 0 AND EXISTS \"${M_OUT}/sha256/${H1}\"" "mirror populated from the local archive store, no network")
+run_mirror(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/two-packages.cmake -DCMDEP_MIRROR_OUT=file://${M_OUT})
+check("rc EQUAL 0 AND EXISTS \"${M_OUT}/sha256/${H2}\"" "missing archive fetched upstream into the mirror")
+string(FIND "${log}" "already in" _already)
+check("NOT _already EQUAL -1" "archives already in the mirror are skipped")
+file(REMOVE_RECURSE "${CACHE_DIR}")
+run_fetch(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/bogus-packages.cmake "-DCMDEP_MIRRORS=${M_OUT}")
+check("rc EQUAL 0 AND EXISTS \"${D1}/CMakeLists.txt\"" "a populated mirror serves a mirrors-only fetch")
+
+# --- 22. configure mode: mirrors set in CMakeLists, ';'-separated list --------
+file(REMOVE_RECURSE "${CACHE_DIR}")
+set(_mproj "${WORK_DIR}/mproj")
+file(MAKE_DIRECTORY "${_mproj}")
+file(WRITE "${_mproj}/CMakeLists.txt"
+    "cmake_minimum_required(VERSION 3.18)\n"
+    "project(mproj LANGUAGES NONE)\n"
+    "list(APPEND CMAKE_MODULE_PATH \"${_repo}/cmake\")\n"
+    "include(CmDepMain)\n"
+    "set(CMDEP_MIRRORS \"${M_EMPTY}\" \"file://${M_GOOD}\")\n"
+    "set(CMDEP_PACKAGES_FILE \"${WORK_DIR}/bogus-packages.cmake\")\n"
+    "CmDepFetch()\n"
+    "CmDepAddPackage(dep)\n")
+execute_process(COMMAND ${CMAKE_COMMAND} -E env CMDEP_CONFIG=${WORK_DIR}/no-such-config.cmake
+        ${CMAKE_COMMAND} -S "${_mproj}" -B "${_mproj}/build" -DCMDEP_DIR=${CACHE_DIR}
+    RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
+check("rc EQUAL 0 AND EXISTS \"${D1}/CMakeLists.txt\"" "configure mode honours CMDEP_MIRRORS set as a CMake list")
+
+# --- 21. HTTP mirror, auth header, PUT write-back (needs python3) ------------
+find_program(PYTHON3 NAMES python3 python)
+if (PYTHON3)
+    set(HTTP_ROOT "${WORK_DIR}/http-root")
+    file(REMOVE_RECURSE "${HTTP_ROOT}")
+    file(MAKE_DIRECTORY "${HTTP_ROOT}/upstream")
+    configure_file("${TGZ1}" "${HTTP_ROOT}/upstream/dep.tar.gz" COPYONLY)
+    configure_file("${TGZ2}" "${HTTP_ROOT}/upstream/dep2.tar.gz" COPYONLY)
+    # Server and client run concurrently (one execute_process pipeline).
+    execute_process(
+        COMMAND ${PYTHON3} "${CMAKE_CURRENT_LIST_DIR}/mirror_server.py"
+                "${HTTP_ROOT}" "${WORK_DIR}/http-port" "Bearer s3cret"
+        COMMAND ${CMAKE_COMMAND} -DWORK_DIR=${WORK_DIR} -DH1=${H1} -DH2=${H2}
+                -P "${CMAKE_CURRENT_LIST_DIR}/CmDepMirrorHttpTest.cmake"
+        RESULT_VARIABLE _http_rc)
+    if (EXISTS "${WORK_DIR}/http-failures")
+        file(READ "${WORK_DIR}/http-failures" _hf)
+    else ()
+        set(_hf 1)
+    endif ()
+    check("_hf EQUAL 0" "HTTP mirror suite")
+else ()
+    message(STATUS "SKIP: HTTP mirror tests (python3 not found)")
+endif ()
 
 if (_failures GREATER 0)
     message(FATAL_ERROR "${_failures} test(s) failed")

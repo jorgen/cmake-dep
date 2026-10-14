@@ -7,6 +7,8 @@
 #   CMDEP_PACKAGES_FILE  - path to the packages file (required in script mode)
 #   CMDEP_PROJECT_ROOT   - project root directory (defaults to cwd); a relative
 #                          CMDEP_DIR is resolved against it
+#   CMDEP_MIRRORS        - ordered sources, e.g. "https://mirror.lan,direct"
+#                          (see docs/caching-and-mirrors.md)
 #   CMDEP_DIR            - override the fetch directory (default: the shared
 #                          per-user cache, see CmDepCacheDir)
 #   CMDEP_PROJECT        - knob prefix (enables -D<PREFIX>_<DEP>_URL/_SHA256/_VERSION
