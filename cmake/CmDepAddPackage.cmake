@@ -1,5 +1,6 @@
 # CmDepAddPackage(<name> [CONFIG] [NO_SYSTEM_FIND] [INCLUDE_IN_ALL]
 #                 [PACKAGE <pkg>] [SKIP_IF_TARGET <target>] [PUBLIC_INCLUDE <subdir>]
+#                 [BINARY_DIR <dir>]
 #                 [OPTIONS VAR=VALUE...] [SUBDIR_ARGS <args>...])
 #
 # Adds a fetched dependency with add_subdirectory. The subdirectory is added
@@ -22,7 +23,7 @@
 # add_subdirectory arguments does not silently opt back into ALL.
 function(CmDepAddPackage name)
     set(_options CONFIG NO_SYSTEM_FIND INCLUDE_IN_ALL)
-    set(_one PACKAGE SKIP_IF_TARGET PUBLIC_INCLUDE)
+    set(_one PACKAGE SKIP_IF_TARGET PUBLIC_INCLUDE BINARY_DIR)
     set(_multi OPTIONS SUBDIR_ARGS)
     cmake_parse_arguments(PARSE_ARGV 1 CMDEP_ADD "${_options}" "${_one}" "${_multi}")
 
@@ -71,6 +72,19 @@ function(CmDepAddPackage name)
         list(REMOVE_ITEM _subdir_args EXCLUDE_FROM_ALL)
     elseif (NOT "EXCLUDE_FROM_ALL" IN_LIST _subdir_args)
         list(APPEND _subdir_args EXCLUDE_FROM_ALL)
+    endif ()
+
+    # Fetched sources live outside the project tree (the shared cache), so
+    # add_subdirectory needs an explicit binary dir -- unless SUBDIR_ARGS
+    # already starts with one.
+    list(GET _subdir_args 0 _first)
+    if (_first STREQUAL "SYSTEM" OR _first STREQUAL "EXCLUDE_FROM_ALL")
+        if (CMDEP_ADD_BINARY_DIR)
+            set(_bin "${CMDEP_ADD_BINARY_DIR}")
+        else ()
+            set(_bin "${CMAKE_CURRENT_BINARY_DIR}/_cmdep/${name}")
+        endif ()
+        list(INSERT _subdir_args 0 "${_bin}")
     endif ()
 
     add_subdirectory("${${name}_SOURCE_DIR}" ${_subdir_args})

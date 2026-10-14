@@ -48,11 +48,15 @@ CmDepFetchPackage(doctest v2.4.12
 ```
 
 Each call to `CmDepFetchPackage(name version url hash)` downloads and extracts the
-archive into `3rdparty/<name>-<version>/`, and sets three variables in the calling scope:
+archive into the shared cache (`~/.cache/cmake-dep/<name>-<version>-<hash12>/` by default,
+see [The source cache](#the-source-cache)), and sets three variables in the calling scope:
 
 - `${name}_SOURCE_DIR` -- path to the extracted source
 - `${name}_VERSION` -- the version string (the effective, possibly-overridden one)
 - `${name}_USE_SYSTEM` -- `ON`/`OFF`; whether a system copy was requested (see below)
+
+Downloads happen at the first configure; later configures (in this or any other checkout) are
+cache hits.
 
 ### Per-dependency overrides and system toggles
 
@@ -82,8 +86,40 @@ set(CMDEP_PACKAGES_FILE "${CMAKE_CURRENT_SOURCE_DIR}/CMake/3rdPartyPackages.cmak
 CmDepFetch()
 ```
 
-Sources are downloaded into `${PROJECT_SOURCE_DIR}/3rdparty/` by default. Override with
-`CMDEP_DIR`.
+Sources are downloaded into the shared cache by default. Override with `CMDEP_DIR`.
+
+### The source cache
+
+By default every project, checkout and worktree on the machine shares one source cache, so a
+dependency is downloaded once per machine, not once per checkout. The location is the first of:
+
+1. `CMDEP_DIR` (CMake variable, e.g. `-DCMDEP_DIR=3rdparty`)
+2. `CMDEP_DIR` (environment variable -- handy for CI)
+3. `$XDG_CACHE_HOME/cmake-dep`
+4. `~/.cache/cmake-dep` (`%LOCALAPPDATA%/cmake-dep` on Windows)
+
+A relative `CMDEP_DIR` is resolved against the project root, so `-DCMDEP_DIR=3rdparty` restores a
+per-project vendor directory.
+
+Each entry is `<name>-<version>-<hash12>`, where `<hash12>` is the first 12 hex digits of the
+archive hash. Two projects pinning the same version to different archives (or a `-D…_URL` /
+`-D…_SHA256` override) therefore get separate entries and never clobber each other.
+
+The cache is safe to share between concurrent configures:
+
+- **Completion stamp.** Every entry contains a `.cmake-dep-complete` file. An entry is assembled
+  in `<cache>/.tmp/`, the stamp is written last, and only then is the directory renamed into place.
+  An entry without a stamp is a leftover from an interrupted fetch: it is removed and fetched again.
+  If the stamp is somehow missing after a fetch, configure fails rather than looping.
+- **Locking.** All changes to an entry happen under a per-entry `file(LOCK)` in `<cache>/.locks/`.
+  A second configure that needs the same entry waits (`waiting for another process…`) and then
+  uses the finished result; entries that are already complete are read without taking the lock.
+- **Hash verification.** The archive's hash is checked before extraction; a mismatch fails the
+  configure and leaves nothing behind.
+
+Because the cache is shared, treat entries as read-only: build out of source (`CmDepAddPackage`
+and `CmDepBuildExternal` both do) and don't patch fetched sources in place. To clear the cache,
+delete the directory.
 
 ### 3. Use the fetched sources
 
@@ -93,6 +129,9 @@ or anything else:
 ```cmake
 add_subdirectory(${libuv_SOURCE_DIR} "${CMAKE_CURRENT_BINARY_DIR}/libuv_build" SYSTEM)
 ```
+
+The sources are outside your project tree, so `add_subdirectory` needs an explicit binary
+directory.
 
 ### 3b. Let cmake-dep own the find-vs-build branch
 
@@ -122,6 +161,7 @@ Options:
 | `OPTIONS <VAR=VAL>…` | Boolean cache knobs forced before `add_subdirectory`, unset after |
 | `SUBDIR_ARGS <args>…` | Replaces the `add_subdirectory` args (default `SYSTEM`). `EXCLUDE_FROM_ALL` is applied on top of whatever you pass, unless `INCLUDE_IN_ALL` |
 | `INCLUDE_IN_ALL` | Add the subdirectory to `ALL` -- opt out of the `EXCLUDE_FROM_ALL` default (see below) |
+| `BINARY_DIR <dir>` | Binary dir for the `add_subdirectory` (default `${CMAKE_CURRENT_BINARY_DIR}/_cmdep/<name>`). Ignored if `SUBDIR_ARGS` already starts with a binary dir |
 | `SKIP_IF_TARGET <tgt>` | In bundled mode, skip if `<tgt>` already exists (avoids duplicate-target clashes) |
 | `PUBLIC_INCLUDE <dir>` | `target_include_directories(<name> PUBLIC ${<name>_SOURCE_DIR}/<dir>)` after the add |
 | `NO_SYSTEM_FIND` | In system mode do nothing (the `find_package` is handled elsewhere) |
@@ -266,8 +306,9 @@ Then run it from the command line:
 cmake -P CMake/FetchDependencies.cmake
 ```
 
-This downloads all packages without running a full configure, which lets CI cache the `3rdparty/`
-directory independently from the build.
+This downloads all packages without running a full configure, using the same fetch path,
+cache and locking as a configure -- so a pre-fetch is a cache hit at configure time. CI can cache
+the source cache directory (or set `CMDEP_DIR` to a cached path) independently from the build.
 
 ## Complete Example
 
@@ -324,19 +365,30 @@ CmDepTargetLinkLibrary(my_server PRIVATE LibreSSL::TLS LibreSSL::SSL LibreSSL::C
 | `CmDepTargetLinkLibrary(target scope targets...)` | Link against external and regular targets |
 | `CmDepInstallDir(var name version)` | Get the install path for an external build |
 | `CmDepFetchSetup(project_root packages_file)` | Standalone fetch (for `cmake -P` scripts) |
+| `CmDepCacheDir(out_var)` | Resolve the source cache directory |
 
 ### Variables
 
 | Variable | Default | Description |
 |---|---|---|
 | `CMDEP_PACKAGES_FILE` | *(required)* | Path to your packages definition file |
-| `CMDEP_DIR` | `${PROJECT_SOURCE_DIR}/3rdparty` | Where to store fetched sources |
+| `CMDEP_DIR` | `$ENV{CMDEP_DIR}`, else `~/.cache/cmake-dep` | Where to store fetched sources (relative paths resolve against the project root) |
 | `CMDEP_PROJECT` | `${PROJECT_NAME}` | Prefix (uppercased) for the auto-declared `<PREFIX>_<DEP>_*` / `<PREFIX>_USE_SYSTEM_<DEP>` knobs |
 
 ## Requirements
 
 - CMake 3.18 or later
-- A working internet connection for initial fetches (sources are cached in `3rdparty/`)
+- A working internet connection for initial fetches (sources are cached in `~/.cache/cmake-dep`)
+
+## Tests
+
+```bash
+cmake -P tests/CmDepFetchTest.cmake
+```
+
+Runs offline against `file://` archives and covers fresh fetch, cache hits, recovery from partial
+entries and stale temp dirs, hash mismatches, overrides, locking and concurrent fetchers, and
+configure mode.
 
 ## License
 
