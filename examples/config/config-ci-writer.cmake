@@ -7,3 +7,8 @@
 
 set(CMDEP_MIRRORS "https://cmdep.lan.example.com,direct")
 set(CMDEP_MIRROR_PUSH "https://cmdep.lan.example.com")
+
+# Also publish prebuilt binary packages built here (docs/binary-packages.md).
+# Only trusted machines should do this: everyone downloading them runs this code.
+set(CMDEP_BINARY_MIRRORS "https://cmdep.lan.example.com")
+set(CMDEP_BINARY_PUSH "https://cmdep.lan.example.com")

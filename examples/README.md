@@ -3,12 +3,14 @@
 | Directory | What's in it |
 |---|---|
 | [`project/`](project) | A small working project (libuv + doctest) using `CmDepFetch` and `CmDepAddPackage` |
+| [`qt/`](qt) | A Qt Widgets app with QtBase as a **binary package**: built once per machine, or downloaded from a team mirror |
 | [`config/`](config) | User config files: [standard](config/config.cmake) (annotated), [air-gapped](config/config-airgapped.cmake), [CI writer](config/config-ci-writer.cmake) |
 | [`mirror-servers/`](mirror-servers) | Serving a mirror: file share, nginx (with authenticated PUT), Artifactory, Nexus, S3 |
-| [`ci/`](ci) | GitHub Actions: [caching the archive store](ci/github-actions.yml), [keeping a mirror in sync](ci/populate-mirror.yml) |
+| [`ci/`](ci) | GitHub Actions: [caching the archive store](ci/github-actions.yml), [keeping a mirror in sync](ci/populate-mirror.yml), [publishing binary packages per platform](ci/binary-packages.yml) |
 | [`scripts/`](scripts) | [`populate-mirror.sh`](scripts/populate-mirror.sh): one mirror from several projects' packages files |
 
-Background: [docs/caching-and-mirrors.md](../docs/caching-and-mirrors.md).
+Background: [docs/caching-and-mirrors.md](../docs/caching-and-mirrors.md) and
+[docs/binary-packages.md](../docs/binary-packages.md).
 
 ## A typical team setup
 
@@ -19,3 +21,6 @@ Background: [docs/caching-and-mirrors.md](../docs/caching-and-mirrors.md).
    `~/.config/cmake-dep/` (or set `CMDEP_MIRRORS` in the environment).
 4. **Keep it filled.** Either give CI push rights ([`config-ci-writer.cmake`](config/config-ci-writer.cmake))
    or run [`ci/populate-mirror.yml`](ci/populate-mirror.yml) whenever a packages file changes.
+5. **For big dependencies (Qt),** add a CI job per platform that configures with
+   `CMDEP_BINARY_PUSH` ([`ci/binary-packages.yml`](ci/binary-packages.yml)), and give developers
+   `CMDEP_BINARY_MIRRORS`.

@@ -1,0 +1,49 @@
+# Example GitHub Actions workflow that keeps prebuilt binary packages (e.g.
+# QtBase) on the team mirror, one per supported platform.
+#
+# Configuring the project with CMDEP_BINARY_PUSH builds whatever binary package
+# isn't on the mirror yet and uploads it. Developers then set
+# CMDEP_BINARY_MIRRORS and download instead of building.
+#
+# Only this job should hold push credentials: everyone who downloads a binary
+# trusts whoever uploaded it (docs/binary-packages.md, "Trust").
+
+name: binary packages
+
+on:
+  push:
+    branches: [main]
+    paths: ['CMake/3rdPartyPackages.cmake', 'CMakeLists.txt']
+  workflow_dispatch:
+
+jobs:
+  binaries:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux-x86_64-ubuntu24.04-gcc13   # must match developers' CMDEP_BINARY_PLATFORM
+          - os: windows-2022
+            platform: windows-x64-msvc2022
+          - os: macos-14
+            platform: macos-arm64-xcode15
+    runs-on: ${{ matrix.os }}
+    env:
+      CMDEP_BINARY_PLATFORM: ${{ matrix.platform }}
+      CMDEP_MIRRORS: https://cmdep.example.com,direct
+      CMDEP_BINARY_MIRRORS: https://cmdep.example.com     # skip what's already there
+      CMDEP_BINARY_PUSH: https://cmdep.example.com
+      CMDEP_MIRROR_HTTPHEADER: "Authorization: Bearer ${{ secrets.MIRROR_TOKEN }}"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1        # Windows: compiler environment for Ninja
+        if: runner.os == 'Windows'
+      - name: Install Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v5
+
+      # Configure is enough: binary packages are built and pushed at configure time.
+      # One run per configuration you support.
+      - name: Release
+        run: cmake -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: Debug
+        run: cmake -B build-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug

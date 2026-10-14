@@ -331,6 +331,19 @@ else ()
     message(STATUS "SKIP: HTTP mirror tests (python3 not found)")
 endif ()
 
+# ===========================================================================
+# Binary packages (separate script; needs a C compiler)
+# ===========================================================================
+execute_process(
+    COMMAND ${CMAKE_COMMAND} -DWORK_DIR=${WORK_DIR}/binary -DRESULT_FILE=${WORK_DIR}/binary-failures
+            -P "${CMAKE_CURRENT_LIST_DIR}/CmDepBinaryTest.cmake")
+if (EXISTS "${WORK_DIR}/binary-failures")
+    file(READ "${WORK_DIR}/binary-failures" _bf)
+else ()
+    set(_bf 1)
+endif ()
+check("_bf EQUAL 0" "binary package suite")
+
 if (_failures GREATER 0)
     message(FATAL_ERROR "${_failures} test(s) failed")
 endif ()

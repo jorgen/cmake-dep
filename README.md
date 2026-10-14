@@ -203,6 +203,36 @@ else ()
 endif ()
 ```
 
+## Binary Packages (Qt and other big dependencies)
+
+Some dependencies are too expensive to compile in every build tree. `CmDepBinaryPackage` builds
+one **once per machine** (at configure time, into `~/.cache/cmake-dep/bin/`), shares the installed
+result between every checkout, worktree and build directory, and can download it from a team
+**binary mirror** instead of building it at all:
+
+```cmake
+CmDepFetch()   # qtbase is listed in the packages file like any other source
+CmDepBinaryPackage(qtbase
+    CMAKE_ARGS   -DQT_BUILD_TESTS=OFF -DQT_BUILD_EXAMPLES=OFF
+    FIND_PACKAGE Qt6 REQUIRED COMPONENTS Core Gui Widgets)
+qt_standard_project_setup()                 # Qt6::moc etc. exist at configure time
+```
+
+```cmake
+# developers                                          # CI, per platform
+set(CMDEP_BINARY_MIRRORS "https://cmdep.lan")         set(CMDEP_BINARY_PUSH "https://cmdep.lan")
+```
+
+Packages are identified by a **build key**: a hash of the source, `CMAKE_ARGS`, compiler and
+platform, configurations and dependencies. Absolute install paths in text files are rewritten so
+packages survive the move into the cache and onto other machines. Unlike source archives, binaries
+can't be checked against a pinned hash, so binary mirrors are a separate opt-in and should only be
+writable by trusted CI.
+
+**Full guide: [docs/binary-packages.md](docs/binary-packages.md)**, covering the build key,
+`CMDEP_BINARY_PLATFORM` for matching keys across a team, mirrors, the trust model, relocation,
+Debug/Release and troubleshooting. A Qt example is in [`examples/qt/`](examples/qt).
+
 ## Building External Projects
 
 For dependencies that need their own CMake configure/build/install cycle (e.g. LibreSSL),
@@ -380,6 +410,7 @@ CmDepTargetLinkLibrary(my_server PRIVATE LibreSSL::TLS LibreSSL::SSL LibreSSL::C
 | `CmDepInstallDir(var name version)` | Get the install path for an external build |
 | `CmDepFetchSetup(project_root packages_file)` | Standalone fetch (for `cmake -P` scripts) |
 | `CmDepCacheDir(out_var)` | Resolve the source cache directory |
+| `CmDepBinaryPackage(name [CMAKE_ARGS …] [FIND_PACKAGE …] [DEPENDS …] [KEY_VARS …] [CONFIGS …] [SOURCE_SUBDIR d] [GENERATOR g] [NO_PATH_REWRITE])` | Build a fetched dependency once per machine (or download it from a binary mirror) and `find_package` it from the shared cache. See [docs/binary-packages.md](docs/binary-packages.md) |
 
 ### Scripts (`cmake -P`)
 
@@ -387,6 +418,7 @@ CmDepTargetLinkLibrary(my_server PRIVATE LibreSSL::TLS LibreSSL::SSL LibreSSL::C
 |---|---|
 | `cmake/CmDepFetchDependencies.cmake` | Fetch everything in `CMDEP_PACKAGES_FILE` without a configure |
 | `cmake/CmDepMirror.cmake` | Copy everything in `CMDEP_PACKAGES_FILE` into the mirror `CMDEP_MIRROR_OUT` |
+| `cmake/CmDepBinaryPush.cmake` | Upload the binary package `CMDEP_BINARY_ENTRY` from the local cache to `CMDEP_BINARY_PUSH` |
 
 ### Variables
 
@@ -407,6 +439,11 @@ config file `~/.config/cmake-dep/config.cmake`, in that order of precedence
 | `CMDEP_KEEP_ARCHIVES` | `ON` | Keep downloaded archives in `<cache>/archives/<algo>/<hex>` |
 | `CMDEP_MIRROR_TIMEOUT` | `10` | Inactivity timeout (seconds) for mirror requests |
 | `CMDEP_MIRROR_HTTPHEADER` | *(none)* | HTTP header sent to mirrors only (e.g. `Authorization: Bearer …`) |
+| `CMDEP_BINARIES` | `prefer` | Binary packages: `prefer` (cache > mirrors > build), `require` (never build), `local` (never use mirrors) |
+| `CMDEP_BINARY_MIRRORS` | *(none)* | Mirrors to download binary packages from |
+| `CMDEP_BINARY_PUSH` | *(none)* | Mirror to upload locally built binary packages to |
+| `CMDEP_BINARY_PLATFORM` | auto-detected | Replaces the platform part of the binary build key |
+| `CMDEP_BINARY_JOBS` | logical cores | Parallel jobs when building a binary package |
 
 ## Requirements
 
@@ -425,6 +462,11 @@ fetches, cache hits, recovery from partial entries, hash mismatches, overrides, 
 concurrent fetchers, configure mode, the archive store, mirror fallback order (missing/corrupt/
 unreachable mirrors), mirrors-only mode, write-back to directory and HTTP mirrors, mirror
 authentication (and that it never reaches upstream), settings precedence, and `CmDepMirror.cmake`.
+It also runs [`tests/CmDepBinaryTest.cmake`](tests/CmDepBinaryTest.cmake) (needs a C compiler).
+That covers binary packages: local builds, cache hits across build directories, key changes,
+pushing to and pulling from binary mirrors, `require`/`local` modes, corrupt mirror binaries,
+install-path rewriting (including after download to a different path), Release+Debug builds,
+`CmDepBinaryPush.cmake` and concurrent configures.
 
 ## License
 

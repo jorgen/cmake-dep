@@ -27,3 +27,18 @@ set(CMDEP_MIRRORS "https://cmdep.lan.example.com,direct")
 # Credentials for the mirror: prefer ~/.netrc or the CMDEP_MIRROR_HTTPHEADER
 # environment variable over writing a secret into this file.
 # set(CMDEP_MIRROR_HTTPHEADER "Authorization: Bearer <token>")
+
+# --- binary packages (CmDepBinaryPackage, docs/binary-packages.md) -----------
+
+# Where to download prebuilt binary packages (e.g. QtBase) from. Opt-in and
+# separate from CMDEP_MIRRORS: you trust whoever can upload binaries there.
+# set(CMDEP_BINARY_MIRRORS "https://cmdep.lan.example.com")
+
+# prefer (default): cache > binary mirrors > build locally
+# require: never build locally, fail if no binary is available
+# local: never use binary mirrors
+# set(CMDEP_BINARIES prefer)
+
+# Replace the auto-detected platform part of the build key, so binaries built
+# by CI in the team's standard image match yours. Must agree with CI.
+# set(CMDEP_BINARY_PLATFORM "linux-x86_64-ubuntu24.04-gcc13")

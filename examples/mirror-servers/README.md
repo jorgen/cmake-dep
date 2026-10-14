@@ -1,7 +1,9 @@
 # Mirror server setups
 
-A cmake-dep mirror is just files at `<base>/<algo>/<hex>`, so most things that can serve files work.
-Everything served is hash-checked by the client, so the server doesn't need to be trusted. See
+A cmake-dep mirror is just files at `<base>/<algo>/<hex>` (sources) and `<base>/bin/<key>.tar.zst`
+(binary packages), so most things that can serve files work. Source archives are hash-checked by the
+client, so the server doesn't need to be trusted for them. Binary packages are a different matter:
+restrict who can upload them (see [docs/binary-packages.md](../../docs/binary-packages.md#trust)). See
 [docs/caching-and-mirrors.md](../../docs/caching-and-mirrors.md) for the full picture.
 
 | Setup | Read | Write-back (`CMDEP_MIRROR_PUSH`) | Notes |
