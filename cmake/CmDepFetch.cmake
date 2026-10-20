@@ -577,7 +577,94 @@ function(_CmDepPopulate out_var name version url url_hash)
     file(LOCK "${_lock}" RELEASE)
 endfunction()
 
+# Applies <patches> (in order) to a copy of the fetched tree <base>, giving a
+# separate cache entry <base>-p<hash8>, keyed by the patches' content. The
+# shared, unpatched entry stays untouched. Patches are unified diffs applied
+# with -p1 (git-style a/ b/ prefixes), using `git apply`, or `patch` if git is
+# not available.
+function(_CmDepPatch out_var name base)
+    set(_patches ${ARGN})
+    set(_ids "")
+    foreach (_p IN LISTS _patches)
+        if (NOT EXISTS "${_p}")
+            message(FATAL_ERROR "cmake-dep: ${name}: patch not found: ${_p}")
+        endif ()
+        file(SHA256 "${_p}" _ph)
+        string(APPEND _ids "${_ph}\n")
+    endforeach ()
+    string(SHA256 _pkey "${_ids}")
+    string(SUBSTRING "${_pkey}" 0 8 _pshort)
+    set(_dest "${base}-p${_pshort}")
+    get_filename_component(_root "${base}" DIRECTORY)
+    get_filename_component(_entry "${_dest}" NAME)
+    set(_stamp "${_dest}/.cmake-dep-complete")
+    set(${out_var} "${_dest}" PARENT_SCOPE)
+    if (EXISTS "${_stamp}")
+        _CmDepTouch("${_stamp}")
+        return()
+    endif ()
+
+    file(MAKE_DIRECTORY "${_root}/.locks" "${_root}/.tmp")
+    set(_lock "${_root}/.locks/${_entry}.lock")
+    file(LOCK "${_lock}" GUARD FUNCTION)
+    if (EXISTS "${_stamp}")
+        file(LOCK "${_lock}" RELEASE)
+        return()
+    endif ()
+    file(REMOVE_RECURSE "${_dest}")
+    set(_tmp "${_root}/.tmp/${_entry}")
+    file(REMOVE_RECURSE "${_tmp}")
+    file(MAKE_DIRECTORY "${_tmp}")
+    file(COPY "${base}/" DESTINATION "${_tmp}/tree")
+    file(REMOVE "${_tmp}/tree/.cmake-dep-complete")
+
+    find_program(CMDEP_GIT_EXECUTABLE NAMES git)
+    find_program(CMDEP_PATCH_EXECUTABLE NAMES patch)
+    mark_as_advanced(CMDEP_GIT_EXECUTABLE CMDEP_PATCH_EXECUTABLE)
+    set(_applied "")
+    foreach (_p IN LISTS _patches)
+        get_filename_component(_pn "${_p}" NAME)
+        if (CMDEP_GIT_EXECUTABLE)
+            # GIT_CEILING_DIRECTORIES stops git from discovering an enclosing
+            # repository (e.g. CMDEP_DIR=3rdparty inside the project), which
+            # would make it apply paths relative to that repository.
+            execute_process(
+                COMMAND ${CMAKE_COMMAND} -E env "GIT_CEILING_DIRECTORIES=${_tmp}"
+                        "${CMDEP_GIT_EXECUTABLE}" apply --whitespace=nowarn -p1 "${_p}"
+                WORKING_DIRECTORY "${_tmp}/tree"
+                RESULT_VARIABLE _r OUTPUT_VARIABLE _o ERROR_VARIABLE _e)
+        elseif (CMDEP_PATCH_EXECUTABLE)
+            execute_process(
+                COMMAND "${CMDEP_PATCH_EXECUTABLE}" -p1 --batch --forward -i "${_p}"
+                WORKING_DIRECTORY "${_tmp}/tree"
+                RESULT_VARIABLE _r OUTPUT_VARIABLE _o ERROR_VARIABLE _e)
+        else ()
+            file(REMOVE_RECURSE "${_tmp}")
+            message(FATAL_ERROR "cmake-dep: ${name}: PATCHES need git or patch on PATH")
+        endif ()
+        if (NOT _r EQUAL 0)
+            file(REMOVE_RECURSE "${_tmp}")
+            message(FATAL_ERROR "cmake-dep: ${name}: patch ${_pn} does not apply:\n${_o}${_e}")
+        endif ()
+        file(SHA256 "${_p}" _ph)
+        string(APPEND _applied "patch=${_pn} ${_ph}\n")
+    endforeach ()
+
+    file(WRITE "${_tmp}/tree/.cmake-dep-complete" "patched_from=${base}\n${_applied}")
+    file(RENAME "${_tmp}/tree" "${_dest}")
+    file(REMOVE_RECURSE "${_tmp}")
+    if (NOT EXISTS "${_stamp}")
+        message(FATAL_ERROR "cmake-dep: ${_entry}: stamp file missing after patching")
+    endif ()
+    list(LENGTH _patches _np)
+    message(STATUS "cmake-dep: ${_entry}: applied ${_np} patch(es)")
+    file(LOCK "${_lock}" RELEASE)
+endfunction()
+
+# CmDepFetchPackage(<name> <version> <url> <ALGO=HEX> [PATCHES <file>...])
+# PATCHES paths are relative to the packages file.
 macro(CmDepFetchPackage name version url url_hash)
+    cmake_parse_arguments(_cmdep_fp "" "" "PATCHES" ${ARGN})
     _CmDepProjectPrefix(_cmdep_prefix)
     string(TOUPPER "${name}" _cmdep_dep)
     string(MAKE_C_IDENTIFIER "${_cmdep_dep}" _cmdep_dep)
@@ -610,6 +697,14 @@ macro(CmDepFetchPackage name version url url_hash)
     else ()
         _CmDepPopulate(_cmdep_src ${name} "${_cmdep_eff_version}"
             "${${_cmdep_var_url}}" "${_cmdep_algo}=${${_cmdep_var_hash}}")
+        if (_cmdep_fp_PATCHES AND NOT CMDEP_MIRROR_OUT)
+            set(_cmdep_patch_files "")
+            foreach (_cmdep_p IN LISTS _cmdep_fp_PATCHES)
+                get_filename_component(_cmdep_p "${_cmdep_p}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_LIST_DIR}")
+                list(APPEND _cmdep_patch_files "${_cmdep_p}")
+            endforeach ()
+            _CmDepPatch(_cmdep_src ${name} "${_cmdep_src}" ${_cmdep_patch_files})
+        endif ()
     endif ()
 
     set(${name}_SOURCE_DIR "${_cmdep_src}")
