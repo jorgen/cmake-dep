@@ -79,7 +79,16 @@ tmp_port = port_file + ".tmp"
 with open(tmp_port, "w") as f:
     f.write(str(server.server_address[1]))
 os.replace(tmp_port, port_file)
-# Safety net so a crashed test run never leaves the server behind.
-threading.Timer(300, server.shutdown).start()
+# Safety nets so a crashed test run never leaves the server behind: a hard
+# timeout, and a STOP file the test creates if it gives up waiting for us.
+def _watch():
+    import time
+    deadline = time.time() + 300
+    while time.time() < deadline:
+        if os.path.exists(os.path.join(root, "STOP")):
+            break
+        time.sleep(0.5)
+    server.shutdown()
+threading.Thread(target=_watch, daemon=True).start()
 server.serve_forever()
 os._exit(0)

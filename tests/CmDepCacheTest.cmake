@@ -12,7 +12,7 @@ file(TO_CMAKE_PATH "${WORK_DIR}" WORK_DIR)  # e.g. D:\a\_temp on Windows CI
 file(REMOVE_RECURSE "${WORK_DIR}")
 file(MAKE_DIRECTORY "${WORK_DIR}")
 set(CACHE_DIR "${WORK_DIR}/cache")
-include("${CMAKE_CURRENT_LIST_DIR}/CmDepTestHelpers.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/CmDepTestHelpers.cmake" NO_POLICY_SCOPE)
 if (RESULT_FILE)
     file(WRITE "${RESULT_FILE}" "1")
 endif ()

@@ -14,7 +14,7 @@ file(REMOVE_RECURSE "${WORK_DIR}")
 file(MAKE_DIRECTORY "${WORK_DIR}")
 
 set(CACHE_DIR "${WORK_DIR}/cache")
-include("${CMAKE_CURRENT_LIST_DIR}/CmDepTestHelpers.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/CmDepTestHelpers.cmake" NO_POLICY_SCOPE)
 
 # --- fixtures --------------------------------------------------------------
 make_archive(TGZ1 H1 "dep-1.0" "add_library(dep INTERFACE)\n")
@@ -329,7 +329,10 @@ if (PYTHON3)
                 "${HTTP_ROOT}" "${WORK_DIR}/http-port" "Bearer s3cret"
         COMMAND ${CMAKE_COMMAND} -DWORK_DIR=${WORK_DIR} -DH1=${H1} -DH2=${H2}
                 -P "${CMAKE_CURRENT_LIST_DIR}/CmDepMirrorHttpTest.cmake"
-        RESULT_VARIABLE _http_rc)
+        RESULT_VARIABLE _http_rc ERROR_VARIABLE _http_err)
+    if (_http_err)
+        message(STATUS "HTTP suite stderr (server and client):\n${_http_err}")
+    endif ()
     if (EXISTS "${WORK_DIR}/http-failures")
         file(READ "${WORK_DIR}/http-failures" _hf)
     else ()

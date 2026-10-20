@@ -1,6 +1,12 @@
 # Shared helpers for the cmake-dep test scripts. Expects _repo, WORK_DIR and
 # CACHE_DIR to be set by the including script.
 
+# check() is called with escaped strings ("...\\n"); keep the classic macro
+# argument handling on CMake versions that changed it (4.x, CMP0219).
+if (POLICY CMP0219)
+    cmake_policy(SET CMP0219 OLD)
+endif ()
+
 # Prefix that turns an absolute path into a file:// URL ("file:///C:/x" on Windows).
 if (WIN32)
     set(FU "file:///")
