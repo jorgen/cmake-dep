@@ -80,7 +80,9 @@ function(_run_cmdep_script out_rc out_log script)
                 -P "${script}"
         RESULT_VARIABLE _rc OUTPUT_VARIABLE _out ERROR_VARIABLE _err)
     set(${out_rc} "${_rc}" PARENT_SCOPE)
-    set(${out_log} "${_out}${_err}" PARENT_SCOPE)
+    # CMake word-wraps messages to the terminal width; compare text, not layout.
+    string(REGEX REPLACE "[ \t\r\n]+" " " _log "${_out}${_err}")
+    set(${out_log} "${_log}" PARENT_SCOPE)
 endfunction()
 
 # count_matches(<out_var> <haystack> <needle>)

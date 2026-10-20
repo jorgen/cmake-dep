@@ -101,7 +101,9 @@ function(configure_consumer out_rc out_log bdir)
                 -DCMDEP_DIR=${CACHE_DIR} ${ARGN}
         RESULT_VARIABLE _rc OUTPUT_VARIABLE _out ERROR_VARIABLE _err)
     set(${out_rc} "${_rc}" PARENT_SCOPE)
-    set(${out_log} "${_out}${_err}" PARENT_SCOPE)
+    # CMake word-wraps messages to the terminal width; compare text, not layout.
+    string(REGEX REPLACE "[ \t\r\n]+" " " _log "${_out}${_err}")
+    set(${out_log} "${_log}" PARENT_SCOPE)
 endfunction()
 
 # build_and_run(<ok_var> <build-dir>)
