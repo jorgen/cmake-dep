@@ -10,6 +10,8 @@ how that works, how to set it up, and how to keep a mirror populated.
 - [The local cache](#the-local-cache)
 - [Mirrors](#mirrors)
 - [Populating a mirror](#populating-a-mirror)
+- [Cache maintenance](#cache-maintenance)
+- [Proxies and certificates](#proxies-and-certificates)
 - [Settings reference](#settings-reference)
 - [Security model](#security-model)
 - [Troubleshooting](#troubleshooting)
@@ -146,8 +148,9 @@ Turn it off with `CMDEP_KEEP_ARCHIVES=OFF`.
 source (`CmDepAddPackage` and `CmDepBuildExternal` both do this) and don't patch fetched sources in
 place.
 
-**Clearing the cache.** Delete the directory, or any entry in it. Deleting while no configure is
-running is always safe.
+**Clearing the cache.** See [cache maintenance](#cache-maintenance): `cmdep gc` removes what
+you no longer use. Deleting the directory, or any entry in it, while no configure is running is
+always safe too.
 
 ## Mirrors
 
@@ -284,6 +287,43 @@ mirror for everyone else.
 
 A common split: developers have read-only `CMDEP_MIRRORS`, and only CI holds push credentials.
 
+## Cache maintenance
+
+Each configure that uses a cache entry refreshes its "last used" time (at most once a day, and
+skipped if the cache is read-only). The `cmdep` command uses that:
+
+```bash
+cmdep status                         # entries, sizes, last use
+cmdep gc                             # remove entries unused for 90 days
+cmdep gc --older-than 30d --max-size 20G --dry-run   # preview a stricter policy
+cmdep verify                         # re-hash archives, report incomplete entries
+```
+
+`gc` also removes temp directories abandoned by interrupted fetches, and incomplete entries older
+than an hour. It skips any entry whose lock a running configure holds, and removes entries by
+renaming them away first, so a concurrent configure never sees a half-deleted directory. Put it in
+a cron job or scheduled task for build machines. See [the `cmdep` command](cmdep.md#cache).
+
+## Proxies and certificates
+
+Downloads use CMake's built-in curl, so the usual mechanisms apply:
+
+- **Proxy:** `https_proxy` / `HTTPS_PROXY`, `http_proxy` and `no_proxy` in the environment.
+- **Custom CA** (a TLS-inspecting corporate proxy): set `CMDEP_TLS_CAINFO` to the CA bundle. It
+  applies to every cmake-dep download and upload, and can live in the config file:
+  ```cmake
+  # ~/.config/cmake-dep/config.cmake
+  set(CMDEP_TLS_CAINFO "/etc/ssl/certs/corp-ca-bundle.pem")
+  ```
+  CMake's own `CMAKE_TLS_CAINFO` (variable, and environment variable since CMake 3.30) works as
+  well.
+- **Certificate verification:** requests to mirrors (source and binary, including uploads)
+  always verify TLS certificates, because mirror requests can carry credentials and binary
+  packages have no pinned hash. For `direct` downloads CMake's default applies (`CMAKE_TLS_VERIFY`;
+  verification is on by default since CMake 3.31). Source archives are hash-checked either way.
+- **Git** dependencies (`CmDepFetchGit`, `cmdep add --git`) use git, which has its own settings:
+  `http.proxy`, `http.sslCAInfo` (or `GIT_SSL_CAINFO`), credential helpers.
+
 ## Settings reference
 
 All settings are resolved in this order; the first that is set wins, and an empty value means "use
@@ -303,7 +343,13 @@ the default":
 | `CMDEP_KEEP_ARCHIVES` | `ON` | Keep downloaded archives in `<cache>/archives/<algo>/<hex>` |
 | `CMDEP_MIRROR_TIMEOUT` | `10` | Inactivity timeout in seconds for mirror downloads and pushes |
 | `CMDEP_MIRROR_HTTPHEADER` | *(none)* | One HTTP header (e.g. `Authorization: Bearer …`) for mirror requests only |
+| `CMDEP_TLS_CAINFO` | *(none)* | CA bundle for all cmake-dep downloads and uploads |
+| `CMDEP_LOCK_FILE` | `cmdep.lock` next to the packages file | Lockfile to use ([dependencies](dependencies.md#the-lockfile)) |
+| `CMDEP_LOCKED` | `OFF` | Fail the configure if the lockfile is out of date |
 | `CMDEP_MIRROR_OUT` | *(none)* | `CmDepMirror.cmake` only: the mirror to populate |
+
+Binary package settings (`CMDEP_BINARIES`, `CMDEP_BINARY_*`) are listed in
+[binary-packages.md](binary-packages.md#reference).
 
 The config file is plain CMake, read once per run. Use plain `set()` without `CACHE`:
 

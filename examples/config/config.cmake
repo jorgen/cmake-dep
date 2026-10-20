@@ -42,3 +42,13 @@ set(CMDEP_MIRRORS "https://cmdep.lan.example.com,direct")
 # Replace the auto-detected platform part of the build key, so binaries built
 # by CI in the team's standard image match yours. Must agree with CI.
 # set(CMDEP_BINARY_PLATFORM "linux-x86_64-ubuntu24.04-gcc13")
+
+# Only accept binary packages signed by these keys (an ssh allowed_signers file,
+# made with `cmdep keygen`). Strongly recommended when CMDEP_BINARY_MIRRORS is set.
+# set(CMDEP_BINARY_TRUSTED_KEYS "/path/to/cmake-dep.allowed_signers")
+
+# --- networking ----------------------------------------------------------------
+
+# CA bundle for every cmake-dep download/upload, e.g. behind a TLS-inspecting proxy.
+# (Proxies themselves come from https_proxy / no_proxy in the environment.)
+# set(CMDEP_TLS_CAINFO "/etc/ssl/certs/corp-ca-bundle.pem")

@@ -26,11 +26,17 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/../cmake-dep-cache/archives
-          key: cmake-dep-${{ runner.os }}-${{ hashFiles('CMake/3rdPartyPackages.cmake') }}
+          key: cmake-dep-${{ runner.os }}-${{ hashFiles('cmdep.lock', 'cmdep-packages.cmake') }}
           restore-keys: cmake-dep-${{ runner.os }}-
 
+      - name: Lockfile is up to date
+        if: runner.os == 'Linux'
+        run: |
+          git clone --depth 1 https://github.com/jorgen/cmake-dep.git "$RUNNER_TEMP/cmake-dep"
+          "$RUNNER_TEMP/cmake-dep/bin/cmdep" lock --check
+
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMDEP_LOCKED=ON
 
       - name: Build
         run: cmake --build build --config Release

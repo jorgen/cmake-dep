@@ -6,7 +6,7 @@
 | [`qt/`](qt) | A Qt Widgets app with QtBase as a **binary package**: built once per machine, or downloaded from a team mirror |
 | [`config/`](config) | User config files: [standard](config/config.cmake) (annotated), [air-gapped](config/config-airgapped.cmake), [CI writer](config/config-ci-writer.cmake) |
 | [`mirror-servers/`](mirror-servers) | Serving a mirror: file share, nginx (with authenticated PUT), Artifactory, Nexus, S3 |
-| [`ci/`](ci) | GitHub Actions: [caching the archive store](ci/github-actions.yml), [keeping a mirror in sync](ci/populate-mirror.yml), [publishing binary packages per platform](ci/binary-packages.yml) |
+| [`ci/`](ci) | GitHub Actions: [caching the archive store and checking the lockfile](ci/github-actions.yml), [keeping a mirror in sync](ci/populate-mirror.yml), [publishing signed binary packages per platform](ci/binary-packages.yml) |
 | [`scripts/`](scripts) | [`populate-mirror.sh`](scripts/populate-mirror.sh): one mirror from several projects' packages files |
 
 Background: [docs/caching-and-mirrors.md](../docs/caching-and-mirrors.md) and

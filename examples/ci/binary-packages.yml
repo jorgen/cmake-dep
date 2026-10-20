@@ -5,8 +5,9 @@
 # isn't on the mirror yet and uploads it. Developers then set
 # CMDEP_BINARY_MIRRORS and download instead of building.
 #
-# Only this job should hold push credentials: everyone who downloads a binary
-# trusts whoever uploaded it (docs/binary-packages.md, "Trust").
+# Only this job should hold push credentials and the signing key: everyone who
+# downloads a binary trusts whoever signed it (docs/binary-packages.md, "Trust").
+# Clients set CMDEP_BINARY_TRUSTED_KEYS to the matching allowed_signers file.
 
 name: binary packages
 
@@ -34,8 +35,14 @@ jobs:
       CMDEP_BINARY_MIRRORS: https://cmdep.example.com     # skip what's already there
       CMDEP_BINARY_PUSH: https://cmdep.example.com
       CMDEP_MIRROR_HTTPHEADER: "Authorization: Bearer ${{ secrets.MIRROR_TOKEN }}"
+      CMDEP_BINARY_SIGNING_KEY: ${{ runner.temp }}/cmake-dep-signing-key
     steps:
       - uses: actions/checkout@v4
+      - name: Signing key (from `cmdep keygen`)
+        shell: bash
+        run: |
+          printf '%s\n' "${{ secrets.CMAKE_DEP_SIGNING_KEY }}" > "$CMDEP_BINARY_SIGNING_KEY"
+          chmod 600 "$CMDEP_BINARY_SIGNING_KEY"
       - uses: ilammy/msvc-dev-cmd@v1        # Windows: compiler environment for Ninja
         if: runner.os == 'Windows'
       - name: Install Ninja

@@ -8,4 +8,18 @@
 # trusts whatever you happened to download.)
 CmDepFetchPackage(qtbase v6.8.1
     https://download.qt.io/official_releases/qt/6.8/6.8.1/submodules/qtbase-everywhere-src-6.8.1.tar.xz
-    SHA256=0000000000000000000000000000000000000000000000000000000000000000)
+    SHA256=0000000000000000000000000000000000000000000000000000000000000000
+    LAZY)
+
+# Alternatively pin QtBase straight from its git repository -- no archive hash to
+# look up, git verifies the commit -- with:
+#   cmdep add qtbase 6.8.1 https://github.com/qt/qtbase.git --git v6.8.1
+# which writes a CmDepFetchGit(...) line like the one below. LAZY means the
+# source is only fetched if Qt actually has to be built here: a machine that
+# gets the binary package from a mirror never downloads Qt's sources.
+#
+# CmDepFetchGit(qtbase 6.8.1
+#     https://github.com/qt/qtbase.git
+#     0db4321f2f13c6870283f3fcc0f1a462fd7cf663  # v6.8.1
+#     SHA256=<printed by cmdep add>
+#     LAZY)

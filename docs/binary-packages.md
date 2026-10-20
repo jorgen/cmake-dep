@@ -186,9 +186,59 @@ So:
   protects PUT with a password). Don't let developer machines push unless you trust them all.
 - **Serve over HTTPS** (or a trusted file share), so the connection can't be tampered with.
 - **Packages you build yourself are always trusted.** `CMDEP_BINARIES=local` uses only those.
+- **Sign them** (next section). With signing, a binary is accepted only if it was produced by a key
+  you trust, whoever runs the mirror.
 
-Signing (CI signs each package's build inputs and checksum; clients pin the public key) is planned
-but not implemented yet.
+### Signing
+
+CI signs every binary package it uploads. Clients only accept packages signed by keys they list.
+This uses `ssh-keygen -Y sign` / `-Y verify` (OpenSSH 8.1+, available on Linux, macOS and
+Windows 10+), so there is nothing extra to install.
+
+**1. Create a key** (once):
+
+```bash
+cmdep keygen ci-signing-key --principal ci@example.com
+```
+
+```
+private key:      /…/ci-signing-key                    (CI secret: CMDEP_BINARY_SIGNING_KEY)
+allowed signers:  /…/ci-signing-key.allowed_signers    (clients: CMDEP_BINARY_TRUSTED_KEYS)
+
+ci@example.com namespaces="cmake-dep-binary" ssh-ed25519 AAAAC3Nza…
+```
+
+**2. CI signs.** Store the private key as a secret, write it to a file readable only by the CI
+user (`chmod 600`; ssh-keygen refuses group- or world-readable keys), and set:
+
+```bash
+export CMDEP_BINARY_PUSH=https://cmdep.lan.example.com
+export CMDEP_BINARY_SIGNING_KEY=$RUNNER_TEMP/ci-signing-key
+```
+
+Each upload gets a `<key>.tar.zst.sha256.sig` next to it. That signs the checksum file, which
+names both the build key and the tarball's hash. If signing fails, nothing is uploaded.
+
+**3. Clients verify.** Distribute the `allowed_signers` file (commit it to your repository, or
+install it with your developer setup) and set:
+
+```cmake
+# ~/.config/cmake-dep/config.cmake
+set(CMDEP_BINARY_MIRRORS "https://cmdep.lan.example.com")
+set(CMDEP_BINARY_TRUSTED_KEYS "/path/to/allowed_signers")
+```
+
+With `CMDEP_BINARY_TRUSTED_KEYS` set, a binary from a mirror is used only if its signature
+verifies against that file:
+
+```
+-- cmake-dep: qtbase: signature verified (signed by ci@example.com)
+```
+
+Unsigned packages, packages signed by an unlisted key, and packages whose checksum no longer
+matches its signature are rejected with a message. cmake-dep then builds locally, or fails with
+`CMDEP_BINARIES=require`. Several CI keys can be trusted by putting several lines in the file.
+To rotate a key, add the new line, switch CI over, then remove the old one.
 
 ## Relocation
 
@@ -261,10 +311,15 @@ the prefix to `CMAKE_PREFIX_PATH`.
 | `CMDEP_BINARY_PUSH` | *(none)* | Mirror to upload locally built packages to |
 | `CMDEP_BINARY_PLATFORM` | auto-detected | Replaces the platform part of the build key |
 | `CMDEP_BINARY_JOBS` | `$CMAKE_BUILD_PARALLEL_LEVEL`, else logical cores | Parallel jobs for local builds |
+| `CMDEP_BINARY_SIGNING_KEY` | *(none)* | Private key (file) that signs uploaded packages (CI) |
+| `CMDEP_BINARY_TRUSTED_KEYS` | *(none)* | ssh `allowed_signers` file; when set, only packages signed by these keys are used |
 
 `CMDEP_MIRROR_TIMEOUT` and `CMDEP_MIRROR_HTTPHEADER` apply to binary mirrors too.
 
-**Scripts:** `cmake/CmDepBinaryPush.cmake` (`CMDEP_BINARY_ENTRY`, `CMDEP_BINARY_PUSH`).
+**Commands:** `cmdep push-binary <entry> <mirror>` and `cmdep keygen <file>` (see
+[the `cmdep` command](cmdep.md)); `cmake/CmDepBinaryPush.cmake` is the underlying script.
+
+Binary packages replace the older [`CmDepBuildExternal`](build-external.md), which is deprecated.
 
 ## Troubleshooting
 
@@ -285,6 +340,9 @@ doesn't rewrite: a binary file, or an unusual text-file extension. Check
 DLLs next to the executable (e.g. `windeployqt`, or a post-build `copy_if_different` of
 `$<TARGET_RUNTIME_DLLS:app>`), or set `VS_DEBUGGER_ENVIRONMENT`.
 
-**Disk usage.** Each distinct key is a full installed prefix. Delete old entries under
-`~/.cache/cmake-dep/bin/` when you no longer need them. Anything currently in use is rebuilt or
-re-downloaded on the next configure.
+**Disk usage.** Each distinct key is a full installed prefix. `cmdep status` shows them;
+`cmdep gc --older-than 30d` (or `--max-size 50G`) removes the ones you no longer use. Anything still
+in use is rebuilt or re-downloaded at its next configure.
+
+**"rejected: signed by a key that is not in …"** The package was signed, but not by a key in
+`CMDEP_BINARY_TRUSTED_KEYS`. Check that CI uses the key whose line you distributed.

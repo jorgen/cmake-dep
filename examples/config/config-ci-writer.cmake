@@ -12,3 +12,6 @@ set(CMDEP_MIRROR_PUSH "https://cmdep.lan.example.com")
 # Only trusted machines should do this: everyone downloading them runs this code.
 set(CMDEP_BINARY_MIRRORS "https://cmdep.lan.example.com")
 set(CMDEP_BINARY_PUSH "https://cmdep.lan.example.com")
+# Sign what is pushed (key from `cmdep keygen`, provided by the CI secret store,
+# file mode 600). Clients verify with CMDEP_BINARY_TRUSTED_KEYS.
+# set(CMDEP_BINARY_SIGNING_KEY "$ENV{RUNNER_TEMP}/cmake-dep-signing-key")
