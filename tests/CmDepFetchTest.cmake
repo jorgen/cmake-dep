@@ -9,6 +9,7 @@ get_filename_component(_repo "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 if (NOT WORK_DIR)
     set(WORK_DIR "${CMAKE_CURRENT_BINARY_DIR}/cmdep-test-work")
 endif ()
+file(TO_CMAKE_PATH "${WORK_DIR}" WORK_DIR)  # e.g. D:\a\_temp on Windows CI
 file(REMOVE_RECURSE "${WORK_DIR}")
 file(MAKE_DIRECTORY "${WORK_DIR}")
 
@@ -355,7 +356,7 @@ check("_bf EQUAL 0" "binary package suite")
 # ===========================================================================
 # Sub-suites run as separate scripts
 # ===========================================================================
-foreach (_suite Cache)
+foreach (_suite Cache Cli)
     execute_process(
         COMMAND ${CMAKE_COMMAND} -DWORK_DIR=${WORK_DIR}/suite-${_suite}
                 -DRESULT_FILE=${WORK_DIR}/suite-${_suite}-failures

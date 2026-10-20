@@ -7,6 +7,7 @@ get_filename_component(_repo "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 if (NOT WORK_DIR)
     set(WORK_DIR "${CMAKE_CURRENT_BINARY_DIR}/cmdep-binary-test-work")
 endif ()
+file(TO_CMAKE_PATH "${WORK_DIR}" WORK_DIR)  # e.g. D:\a\_temp on Windows CI
 file(REMOVE_RECURSE "${WORK_DIR}")
 file(MAKE_DIRECTORY "${WORK_DIR}")
 set(CACHE_DIR "${WORK_DIR}/cache")

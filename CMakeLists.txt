@@ -15,4 +15,8 @@ if (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
         FILES cmake-dep-config.cmake
         DESTINATION share/cmake-dep
     )
+    install(
+        PROGRAMS bin/cmdep bin/cmdep.cmd
+        DESTINATION bin
+    )
 endif ()

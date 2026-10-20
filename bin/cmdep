@@ -1,0 +1,19 @@
+#!/bin/sh
+# cmake-dep command line -- see `cmdep help`. Needs only CMake ($CMAKE or cmake on PATH).
+# Works from a checkout (bin/ next to cmake/) and from an install (share/cmake-dep/cmake).
+self=$0
+while [ -h "$self" ]; do
+    link=$(readlink "$self")
+    case $link in
+        /*) self=$link ;;
+        *) self=$(dirname "$self")/$link ;;
+    esac
+done
+here=$(cd "$(dirname "$self")" && pwd)
+for cli in "$here/../cmake/CmDepCli.cmake" "$here/../share/cmake-dep/cmake/CmDepCli.cmake"; do
+    if [ -f "$cli" ]; then
+        exec "${CMAKE:-cmake}" -P "$cli" -- "$@"
+    fi
+done
+echo "cmdep: cannot find CmDepCli.cmake next to $here" >&2
+exit 1

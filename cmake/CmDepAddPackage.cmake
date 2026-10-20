@@ -74,11 +74,20 @@ function(CmDepAddPackage name)
         list(APPEND _subdir_args EXCLUDE_FROM_ALL)
     endif ()
 
+    # add_subdirectory(... SYSTEM) needs CMake 3.25. Older versions just don't
+    # mark the dependency's headers as system headers (only warnings differ).
+    if (CMAKE_VERSION VERSION_LESS 3.25)
+        list(REMOVE_ITEM _subdir_args SYSTEM)
+    endif ()
+
     # Fetched sources live outside the project tree (the shared cache), so
     # add_subdirectory needs an explicit binary dir -- unless SUBDIR_ARGS
     # already starts with one.
-    list(GET _subdir_args 0 _first)
-    if (_first STREQUAL "SYSTEM" OR _first STREQUAL "EXCLUDE_FROM_ALL")
+    set(_first "")
+    if (_subdir_args)
+        list(GET _subdir_args 0 _first)
+    endif ()
+    if (_first STREQUAL "" OR _first STREQUAL "SYSTEM" OR _first STREQUAL "EXCLUDE_FROM_ALL")
         if (CMDEP_ADD_BINARY_DIR)
             set(_bin "${CMDEP_ADD_BINARY_DIR}")
         else ()
