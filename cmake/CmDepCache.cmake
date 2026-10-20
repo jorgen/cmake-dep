@@ -17,6 +17,11 @@
 # configure are skipped. Deleting an entry that a build tree still uses only
 # costs a re-fetch or rebuild at its next configure.
 
+# Policies for cmake-dep's own code, so it behaves the same in a configure and
+# in a bare `cmake -P` (include() keeps this from leaking into the includer).
+cmake_policy(VERSION 3.18)
+
+
 include("${CMAKE_CURRENT_LIST_DIR}/CmDepFetch.cmake")
 
 function(_CmDepFormatSize out_var bytes)
@@ -146,7 +151,7 @@ function(_CmDepCacheEntries out_var root)
             set(_t "0${_t}")
             math(EXPR _l "${_l} + 1")
         endwhile ()
-        list(APPEND _out "${_t}|archive|${_a}|${_sz}|")
+        list(APPEND _out "${_t}|archive|${_a}|${_sz}|-")  # "-": no lock
     endforeach ()
     list(SORT _out)
     set(${out_var} "${_out}" PARENT_SCOPE)
@@ -276,10 +281,9 @@ function(CmDepCacheGc)
         list(GET _p 1 _kind)
         list(GET _p 2 _path)
         list(GET _p 3 _sz)
-        list(LENGTH _p _np)
-        set(_lock "")
-        if (_np GREATER 4)
-            list(GET _p 4 _lock)
+        list(GET _p 4 _lock)
+        if (_lock STREQUAL "-")
+            set(_lock "")
         endif ()
         math(EXPR _age "${_now} - ${_t}")
         set(_why "")
@@ -315,10 +319,9 @@ function(CmDepCacheGc)
             list(GET _p 1 _kind)
             list(GET _p 2 _path)
             list(GET _p 3 _sz)
-            list(LENGTH _p _np)
-            set(_lock "")
-            if (_np GREATER 4)
-                list(GET _p 4 _lock)
+            list(GET _p 4 _lock)
+            if (_lock STREQUAL "-")
+                set(_lock "")
             endif ()
             math(EXPR _age "${_now} - ${_t}")
             if (_kind STREQUAL "archive" AND _age LESS 3600)

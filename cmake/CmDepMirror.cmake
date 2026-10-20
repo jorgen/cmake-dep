@@ -22,6 +22,11 @@
 #
 # Run it against several packages files (or projects) to build one shared mirror.
 
+# Policies for cmake-dep's own code, so it behaves the same in a configure and
+# in a bare `cmake -P` (include() keeps this from leaking into the includer).
+cmake_policy(VERSION 3.18)
+
+
 include("${CMAKE_CURRENT_LIST_DIR}/CmDepFetch.cmake")
 
 function(CmDepMirrorPackages packages_file)

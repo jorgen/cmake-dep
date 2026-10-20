@@ -13,6 +13,11 @@
 # CMDEP_BINARY_PUSH may be a directory, a file:// URL, or an http(s):// URL that
 # accepts PUT. Credentials: ~/.netrc or CMDEP_MIRROR_HTTPHEADER.
 
+# Policies for cmake-dep's own code, so it behaves the same in a configure and
+# in a bare `cmake -P` (include() keeps this from leaking into the includer).
+cmake_policy(VERSION 3.18)
+
+
 include("${CMAKE_CURRENT_LIST_DIR}/CmDepBinary.cmake")
 
 if (NOT CMDEP_BINARY_ENTRY OR NOT CMDEP_BINARY_PUSH)

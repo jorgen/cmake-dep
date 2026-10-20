@@ -60,8 +60,15 @@ string(FIND "${log}" "would remove" _would)
 check("rc EQUAL 0 AND NOT _would EQUAL -1 AND EXISTS \"${DA}\" AND EXISTS \"${DB}\"" "gc --dry-run reports but deletes nothing")
 
 # --- G3. size limit removes least recently used first ---------------------------
-file(SIZE "${CACHE_DIR}/archives/sha256/${HB}" _szb)
-math(EXPR _limit "${_szb} * 4")   # room for b's entry + archive, not a's as well
+# Limit = current total - 1: gc must evict exactly the least recently used
+# removable item (a's entry; fresh archives are protected for an hour).
+include("${_repo}/cmake/CmDepCache.cmake")
+set(_total 0)
+foreach (_p "${DA}" "${DB}" "${CACHE_DIR}/archives/sha256/${HA}" "${CACHE_DIR}/archives/sha256/${HB}")
+    _CmDepPathSize(_sz "${_p}")
+    math(EXPR _total "${_total} + ${_sz}")
+endforeach ()
+math(EXPR _limit "${_total} - 1")
 run_cache(rc log gc -DCMDEP_GC_OLDER_THAN=3650d -DCMDEP_GC_MAX_SIZE=${_limit})
 check("rc EQUAL 0 AND NOT EXISTS \"${DA}\" AND EXISTS \"${DB}\"" "gc --max-size evicts the least recently used entry")
 file(GLOB _trash "${CACHE_DIR}/.tmp/gc-*")

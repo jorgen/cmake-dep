@@ -21,6 +21,11 @@
 # INCLUDE_IN_ALL restores the pre-existing behaviour for one dependency.
 # EXCLUDE_FROM_ALL is applied independently of SUBDIR_ARGS, so overriding the
 # add_subdirectory arguments does not silently opt back into ALL.
+
+# Policies for cmake-dep's own code, so it behaves the same in a configure and
+# in a bare `cmake -P` (include() keeps this from leaking into the includer).
+cmake_policy(VERSION 3.18)
+
 function(CmDepAddPackage name)
     set(_options CONFIG NO_SYSTEM_FIND INCLUDE_IN_ALL)
     set(_one PACKAGE SKIP_IF_TARGET PUBLIC_INCLUDE BINARY_DIR)

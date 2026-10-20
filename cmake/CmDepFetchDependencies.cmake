@@ -22,6 +22,11 @@
 # This uses the exact same fetch path (CmDepFetch.cmake) as a configure, so a
 # pre-fetch here is a cache hit there.
 
+# Policies for cmake-dep's own code, so it behaves the same in a configure and
+# in a bare `cmake -P` (include() keeps this from leaking into the includer).
+cmake_policy(VERSION 3.18)
+
+
 include("${CMAKE_CURRENT_LIST_DIR}/CmDepFetch.cmake")
 
 function(CmDepFetchSetup project_root packages_file)

@@ -1,3 +1,7 @@
+# Policies for cmake-dep's own code, so it behaves the same in a configure and
+# in a bare `cmake -P` (include() keeps this from leaking into the includer).
+cmake_policy(VERSION 3.18)
+
 include(CmDepInstallDir)
 function(CmDepBuildExternal name version source_dir cmake_args build_targets)
     CmDepInstallDir(INSTALL_INT_CONFIG ${name} ${version})

@@ -1,3 +1,7 @@
+# Policies for cmake-dep's own code, so it behaves the same in a configure and
+# in a bare `cmake -P` (include() keeps this from leaking into the includer).
+cmake_policy(VERSION 3.18)
+
 function(_CmDepProjectPrefix out_var)
     if (DEFINED CMDEP_PROJECT AND NOT CMDEP_PROJECT STREQUAL "")
         set(_p "${CMDEP_PROJECT}")
