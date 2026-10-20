@@ -63,7 +63,8 @@ function(_CmDepLoadConfig)
     set(_keys CMDEP_DIR CMDEP_MIRRORS CMDEP_MIRROR_PUSH CMDEP_KEEP_ARCHIVES
               CMDEP_MIRROR_TIMEOUT CMDEP_MIRROR_HTTPHEADER
               CMDEP_BINARIES CMDEP_BINARY_MIRRORS CMDEP_BINARY_PUSH CMDEP_BINARY_PLATFORM
-              CMDEP_BINARY_JOBS)
+              CMDEP_BINARY_JOBS CMDEP_BINARY_SIGNING_KEY CMDEP_BINARY_TRUSTED_KEYS
+              CMDEP_LOCK_FILE CMDEP_LOCKED)
     # Sentinel-fill so we only capture what the file itself sets, not values
     # inherited from the calling scope.
     foreach (_k IN LISTS _keys)

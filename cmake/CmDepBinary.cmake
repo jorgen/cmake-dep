@@ -248,6 +248,69 @@ function(_CmDepBinaryBuild name src prefix work configs gen multi cmake_args pre
     endforeach ()
 endfunction()
 
+# ---------------------------------------------------------------------------
+# Signing (ssh-keygen -Y)
+#
+# CI signs each package's .sha256 sidecar (which names the build key and the
+# tarball's hash) with CMDEP_BINARY_SIGNING_KEY. Clients that set
+# CMDEP_BINARY_TRUSTED_KEYS (an ssh allowed_signers file) only accept binaries
+# whose signature verifies against it.
+# ---------------------------------------------------------------------------
+function(_CmDepSshKeygen out_var)
+    find_program(CMDEP_SSH_KEYGEN NAMES ssh-keygen
+        PATHS "$ENV{SystemRoot}/System32/OpenSSH" "C:/Windows/System32/OpenSSH")
+    mark_as_advanced(CMDEP_SSH_KEYGEN)
+    set(${out_var} "${CMDEP_SSH_KEYGEN}" PARENT_SCOPE)
+endfunction()
+
+# Signs <file> into <file>.sig. Sets out_ok.
+function(_CmDepBinarySign out_ok file key)
+    _CmDepSshKeygen(_kg)
+    if (NOT _kg)
+        message(WARNING "cmake-dep: CMDEP_BINARY_SIGNING_KEY is set but ssh-keygen was not found")
+        set(${out_ok} FALSE PARENT_SCOPE)
+        return()
+    endif ()
+    file(REMOVE "${file}.sig")
+    execute_process(COMMAND "${_kg}" -Y sign -f "${key}" -n cmake-dep-binary "${file}"
+        RESULT_VARIABLE _r OUTPUT_QUIET ERROR_VARIABLE _e)
+    if (_r EQUAL 0 AND EXISTS "${file}.sig")
+        set(${out_ok} TRUE PARENT_SCOPE)
+    else ()
+        message(WARNING "cmake-dep: signing with ${key} failed: ${_e}")
+        set(${out_ok} FALSE PARENT_SCOPE)
+    endif ()
+endfunction()
+
+# Verifies <sig> over <file> against the allowed_signers file <trusted>.
+# Sets out_ok, out_msg (the signer on success, the reason otherwise).
+function(_CmDepBinaryVerify out_ok out_msg file sig trusted)
+    _CmDepSshKeygen(_kg)
+    if (NOT _kg)
+        set(${out_ok} FALSE PARENT_SCOPE)
+        set(${out_msg} "ssh-keygen not found, cannot verify signatures" PARENT_SCOPE)
+        return()
+    endif ()
+    execute_process(COMMAND "${_kg}" -Y find-principals -s "${sig}" -f "${trusted}"
+        RESULT_VARIABLE _r OUTPUT_VARIABLE _principals ERROR_VARIABLE _e)
+    if (NOT _r EQUAL 0)
+        set(${out_ok} FALSE PARENT_SCOPE)
+        set(${out_msg} "signed by a key that is not in ${trusted}" PARENT_SCOPE)
+        return()
+    endif ()
+    string(REGEX REPLACE "[\r\n].*" "" _principal "${_principals}")
+    execute_process(COMMAND "${_kg}" -Y verify -f "${trusted}" -I "${_principal}" -n cmake-dep-binary -s "${sig}"
+        INPUT_FILE "${file}" RESULT_VARIABLE _r OUTPUT_QUIET ERROR_VARIABLE _e)
+    if (_r EQUAL 0)
+        set(${out_ok} TRUE PARENT_SCOPE)
+        set(${out_msg} "${_principal}" PARENT_SCOPE)
+    else ()
+        string(STRIP "${_e}" _e)
+        set(${out_ok} FALSE PARENT_SCOPE)
+        set(${out_msg} "bad signature (${_e})" PARENT_SCOPE)
+    endif ()
+endfunction()
+
 # Fetches <mirror>/bin/<key>.tar.zst from CMDEP_BINARY_MIRRORS into <work>/prefix.
 # The .sha256 sidecar is pushed last, so its presence marks a complete upload
 # and it guards against truncated/corrupt transfers. (It does not make a
@@ -275,6 +338,22 @@ function(_CmDepBinaryFromMirrors out_source name key work dest)
         elseif (NOT _st STREQUAL "OK")
             message(VERBOSE "cmake-dep: ${name}: no binary on ${_m}")
             continue()
+        endif ()
+        _CmDepSetting(_trusted CMDEP_BINARY_TRUSTED_KEYS "")
+        if (_trusted)
+            _CmDepTryFetch(_st _msg "${_m}/bin/${key}.tar.zst.sha256.sig" "${work}/bin.sha256.sig" NONE "" TRUE)
+            if (NOT _st STREQUAL "OK")
+                message(STATUS "cmake-dep: ${name}: binary on ${_m} is unsigned; ignored "
+                               "(CMDEP_BINARY_TRUSTED_KEYS is set)")
+                continue()
+            endif ()
+            _CmDepBinaryVerify(_vok _vmsg "${work}/bin.sha256" "${work}/bin.sha256.sig" "${_trusted}")
+            file(REMOVE "${work}/bin.sha256.sig")
+            if (NOT _vok)
+                message(STATUS "cmake-dep: ${name}: binary on ${_m} rejected: ${_vmsg}")
+                continue()
+            endif ()
+            message(STATUS "cmake-dep: ${name}: signature verified (signed by ${_vmsg})")
         endif ()
         file(STRINGS "${work}/bin.sha256" _sha LIMIT_COUNT 1 REGEX "^[0-9a-fA-F]+")
         string(REGEX MATCH "^[0-9a-fA-F]+" _sha "${_sha}")
@@ -333,14 +412,28 @@ function(_CmDepBinaryPush name key prefix work target)
     endif ()
     file(SHA256 "${_tar}" _sha)
     file(WRITE "${_tar}.sha256" "${_sha}  ${key}.tar.zst\n")
+    _CmDepSetting(_signing_key CMDEP_BINARY_SIGNING_KEY "")
+    set(_signed FALSE)
+    if (_signing_key)
+        _CmDepBinarySign(_signed "${_tar}.sha256" "${_signing_key}")
+        if (NOT _signed)
+            message(WARNING "cmake-dep: ${name}: not pushing an unsigned binary (signing failed)")
+            file(REMOVE "${_tar}" "${_tar}.sha256")
+            return()
+        endif ()
+    endif ()
+    # Order matters: the .sha256 sidecar goes last and marks the upload complete.
     _CmDepPushFile(_ok "${target}" "bin/${key}.tar.zst" "${_tar}" ${name})
+    if (_ok AND _signed)
+        _CmDepPushFile(_ok "${target}" "bin/${key}.tar.zst.sha256.sig" "${_tar}.sha256.sig" ${name})
+    endif ()
     if (_ok)
         _CmDepPushFile(_ok "${target}" "bin/${key}.tar.zst.sha256" "${_tar}.sha256" ${name})
     endif ()
     if (_ok)
         message(STATUS "cmake-dep: ${name}: pushed binary to ${target}")
     endif ()
-    file(REMOVE "${_tar}" "${_tar}.sha256")
+    file(REMOVE "${_tar}" "${_tar}.sha256" "${_tar}.sha256.sig")
 endfunction()
 
 # Makes the binary package for <name> available and sets, in the caller's

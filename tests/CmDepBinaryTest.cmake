@@ -296,6 +296,72 @@ check("_rel AND _dbg" "both configs installed with a single-config generator")
 build_and_run(ok "${WORK_DIR}/b14")
 check("ok" "consumer builds against the per-config install")
 
+# --- B15. signed binary packages (ssh-keygen -Y) -----------------------------
+find_program(SSH_KEYGEN ssh-keygen PATHS "$ENV{SystemRoot}/System32/OpenSSH")
+if (SSH_KEYGEN)
+    if (WIN32)
+        set(CMDEP "${_repo}/bin/cmdep.cmd")
+    else ()
+        set(CMDEP "${_repo}/bin/cmdep")
+    endif ()
+    set(KEYS "${WORK_DIR}/keys")
+    file(MAKE_DIRECTORY "${KEYS}")
+    foreach (_k ci other)
+        execute_process(COMMAND ${CMAKE_COMMAND} -E env CMDEP_CONFIG=${WORK_DIR}/no-such-config.cmake
+                CMAKE=${CMAKE_COMMAND} "${CMDEP}" keygen "${KEYS}/${_k}" --principal ${_k}@example
+            RESULT_VARIABLE rc OUTPUT_VARIABLE _o ERROR_VARIABLE _e)
+    endforeach ()
+    set(log "${_o}${_e}")
+    check("rc EQUAL 0 AND EXISTS \"${KEYS}/ci\" AND EXISTS \"${KEYS}/ci.allowed_signers\"" "cmdep keygen writes a key and its allowed_signers line")
+    set(TRUST "${KEYS}/ci.allowed_signers")
+
+    file(REMOVE_RECURSE "${CACHE_DIR}" "${BMIRROR}")
+    configure_consumer(rc log "${WORK_DIR}/b15" "-DCMDEP_BINARY_PUSH=${BMIRROR}" "-DCMDEP_BINARY_SIGNING_KEY=${KEYS}/ci")
+    file(GLOB _sigs "${BMIRROR}/bin/*.sha256.sig")
+    check("rc EQUAL 0 AND _sigs" "push with CMDEP_BINARY_SIGNING_KEY uploads a signature")
+
+    file(REMOVE_RECURSE "${CACHE_DIR}")
+    configure_consumer(rc log "${WORK_DIR}/b15b" "-DCMDEP_BINARY_MIRRORS=${BMIRROR}" "-DCMDEP_BINARY_TRUSTED_KEYS=${TRUST}")
+    string(FIND "${log}" "signature verified (signed by ci@example)" _ver)
+    string(FIND "${log}" "building it now" _built)
+    check("rc EQUAL 0 AND NOT _ver EQUAL -1 AND _built EQUAL -1" "trusted signature verified, binary used")
+
+    list(GET _sigs 0 SIG)
+    string(REGEX REPLACE "\\.sig$" "" SHAFILE "${SIG}")
+    file(COPY "${SIG}" DESTINATION "${WORK_DIR}")
+    get_filename_component(_signame "${SIG}" NAME)
+    set(GOODSIG "${WORK_DIR}/${_signame}")
+
+    # signed by a key that is not trusted
+    file(REMOVE "${SIG}")
+    execute_process(COMMAND "${SSH_KEYGEN}" -Y sign -f "${KEYS}/other" -n cmake-dep-binary "${SHAFILE}"
+        OUTPUT_QUIET ERROR_QUIET)
+    file(REMOVE_RECURSE "${CACHE_DIR}")
+    configure_consumer(rc log "${WORK_DIR}/b15c" "-DCMDEP_BINARY_MIRRORS=${BMIRROR}" "-DCMDEP_BINARY_TRUSTED_KEYS=${TRUST}")
+    string(FIND "${log}" "not in" _untrusted)
+    string(FIND "${log}" "building it now" _built)
+    check("rc EQUAL 0 AND NOT _untrusted EQUAL -1 AND NOT _built EQUAL -1" "binary signed by an untrusted key is rejected (built locally instead)")
+
+    # unsigned
+    file(REMOVE "${SIG}")
+    file(REMOVE_RECURSE "${CACHE_DIR}")
+    configure_consumer(rc log "${WORK_DIR}/b15d" "-DCMDEP_BINARY_MIRRORS=${BMIRROR}" "-DCMDEP_BINARY_TRUSTED_KEYS=${TRUST}" -DCMDEP_BINARIES=require)
+    string(FIND "${log}" "is unsigned" _uns)
+    check("NOT rc EQUAL 0 AND NOT _uns EQUAL -1" "unsigned binary is rejected when trusted keys are set (require mode fails)")
+
+    # tampered sidecar under a valid signature
+    configure_file("${GOODSIG}" "${SIG}" COPYONLY)
+    file(READ "${SHAFILE}" _orig)
+    file(WRITE "${SHAFILE}" "0000000000000000000000000000000000000000000000000000000000000000  x.tar.zst\n")
+    file(REMOVE_RECURSE "${CACHE_DIR}")
+    configure_consumer(rc log "${WORK_DIR}/b15e" "-DCMDEP_BINARY_MIRRORS=${BMIRROR}" "-DCMDEP_BINARY_TRUSTED_KEYS=${TRUST}" -DCMDEP_BINARIES=require)
+    string(FIND "${log}" "bad signature" _bad)
+    check("NOT rc EQUAL 0 AND NOT _bad EQUAL -1" "tampered checksum fails signature verification")
+    file(WRITE "${SHAFILE}" "${_orig}")
+else ()
+    message(STATUS "SKIP: binary signing tests (ssh-keygen not found)")
+endif ()
+
 if (RESULT_FILE)
     file(WRITE "${RESULT_FILE}" "${_failures}")
 endif ()
