@@ -54,6 +54,14 @@ function(CmDepAddPackage name)
         return()
     endif ()
 
+    # One copy per build: if another project in this build already added this
+    # package (they share one source via the registry), its targets exist.
+    get_property(_added GLOBAL PROPERTY CMDEP_ADDED_${name})
+    if (_added)
+        return()
+    endif ()
+    set_property(GLOBAL PROPERTY CMDEP_ADDED_${name} TRUE)
+
     set(_forced "")
     foreach (_opt IN LISTS CMDEP_ADD_OPTIONS)
         string(FIND "${_opt}" "=" _eq)

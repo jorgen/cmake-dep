@@ -33,7 +33,7 @@ function(CmDepFetchSetup project_root packages_file)
     set(CMDEP_PROJECT_ROOT "${project_root}")
     CmDepCacheDir(_dir)
     message(STATUS "cmake-dep: fetch directory: ${_dir}")
-    include("${packages_file}")
+    _CmDepFetchRoot("${packages_file}")  # includes the locked transitive packages
     message(STATUS "cmake-dep: all dependencies fetched to: ${_dir}")
 endfunction()
 

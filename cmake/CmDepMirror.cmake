@@ -34,7 +34,7 @@ function(CmDepMirrorPackages packages_file)
         message(FATAL_ERROR "cmake-dep: CMDEP_MIRROR_OUT must be set")
     endif ()
     message(STATUS "cmake-dep: populating mirror ${CMDEP_MIRROR_OUT} from ${packages_file}")
-    include("${packages_file}")
+    _CmDepFetchRoot("${packages_file}")  # includes the locked transitive packages
     message(STATUS "cmake-dep: mirror ${CMDEP_MIRROR_OUT} is up to date")
 endfunction()
 
