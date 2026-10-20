@@ -128,6 +128,32 @@ execute_process(COMMAND ${CMAKE_COMMAND} -E env CMDEP_CONFIG=${WORK_DIR}/no-such
 set(log "${_o}${_e}")
 check("rc EQUAL 0" "configure mode: <name>_SOURCE_DIR points at the patched tree")
 
+# --- P7. LAZY + PATCHES through CmDepAddPackage --------------------------------------
+file(WRITE "${WORK_DIR}/proj/lazy.cmake"
+    "CmDepFetchPackage(dep 1.0 \"${FU}${TGZ}\" SHA256=${H} PATCHES patches/0001-value.patch LAZY)\n")
+file(WRITE "${WORK_DIR}/proj/CMakeLists.txt" "
+cmake_minimum_required(VERSION 3.18)
+project(proj NONE)
+list(APPEND CMAKE_MODULE_PATH \"${_repo}/cmake\")
+include(CmDepMain)
+set(CMDEP_PACKAGES_FILE \"\${CMAKE_CURRENT_SOURCE_DIR}/lazy.cmake\")
+CmDepFetch()
+if (dep_SOURCE_DIR)
+  message(FATAL_ERROR \"LAZY source fetched too early: \${dep_SOURCE_DIR}\")
+endif ()
+CmDepEnsureSource(dep)
+include(\"\${dep_SOURCE_DIR}/CMakeLists.txt\")
+if (NOT DEP_VALUE STREQUAL \"patched\")
+  message(FATAL_ERROR \"DEP_VALUE=\${DEP_VALUE}\")
+endif ()
+")
+file(REMOVE_RECURSE "${CACHE_DIR}")
+execute_process(COMMAND ${CMAKE_COMMAND} -E env CMDEP_CONFIG=${WORK_DIR}/no-such-config.cmake
+        ${CMAKE_COMMAND} -S "${WORK_DIR}/proj" -B "${WORK_DIR}/proj/build-lazy" -DCMDEP_DIR=${CACHE_DIR}
+    RESULT_VARIABLE rc OUTPUT_VARIABLE _o ERROR_VARIABLE _e)
+set(log "${_o}${_e}")
+check("rc EQUAL 0" "LAZY: nothing fetched at CmDepFetch(); CmDepEnsureSource fetches and patches")
+
 if (RESULT_FILE)
     file(WRITE "${RESULT_FILE}" "${_failures}")
 endif ()

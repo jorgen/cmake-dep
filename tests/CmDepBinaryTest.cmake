@@ -298,6 +298,20 @@ check("_rel AND _dbg" "both configs installed with a single-config generator")
 build_and_run(ok "${WORK_DIR}/b14")
 check("ok" "consumer builds against the per-config install")
 
+# --- B16. LAZY: a binary package from a mirror never fetches its source ------
+file(WRITE "${WORK_DIR}/packages.cmake"
+    "CmDepFetchPackage(mylib 1.0 \"${FU}${WORK_DIR}/mylib-1.0.tar.gz\" SHA256=${HLIB} LAZY)\n")
+string(SUBSTRING "${HLIB}" 0 12 SLIB)
+file(REMOVE_RECURSE "${CACHE_DIR}" "${BMIRROR}")
+configure_consumer(rc log "${WORK_DIR}/b16" "-DCMDEP_BINARY_PUSH=${BMIRROR}")
+check("rc EQUAL 0 AND EXISTS \"${CACHE_DIR}/mylib-1.0-${SLIB}/CMakeLists.txt\"" "LAZY: source fetched when the binary package has to be built")
+file(REMOVE_RECURSE "${CACHE_DIR}")
+configure_consumer(rc log "${WORK_DIR}/b16b" "-DCMDEP_BINARY_MIRRORS=${BMIRROR}")
+build_and_run(ok "${WORK_DIR}/b16b")
+check("rc EQUAL 0 AND ok AND NOT EXISTS \"${CACHE_DIR}/mylib-1.0-${SLIB}\"" "LAZY: binary from the mirror, source never fetched")
+file(WRITE "${WORK_DIR}/packages.cmake"
+    "CmDepFetchPackage(mylib 1.0 \"${FU}${WORK_DIR}/mylib-1.0.tar.gz\" SHA256=${HLIB})\n")
+
 # --- B15. signed binary packages (ssh-keygen -Y) -----------------------------
 find_program(SSH_KEYGEN ssh-keygen PATHS "$ENV{SystemRoot}/System32/OpenSSH")
 if (SSH_KEYGEN)

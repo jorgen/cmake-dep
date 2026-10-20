@@ -64,7 +64,7 @@ function(_CmDepLoadConfig)
               CMDEP_MIRROR_TIMEOUT CMDEP_MIRROR_HTTPHEADER
               CMDEP_BINARIES CMDEP_BINARY_MIRRORS CMDEP_BINARY_PUSH CMDEP_BINARY_PLATFORM
               CMDEP_BINARY_JOBS CMDEP_BINARY_SIGNING_KEY CMDEP_BINARY_TRUSTED_KEYS
-              CMDEP_LOCK_FILE CMDEP_LOCKED)
+              CMDEP_LOCK_FILE CMDEP_LOCKED CMDEP_TLS_CAINFO)
     # Sentinel-fill so we only capture what the file itself sets, not values
     # inherited from the calling scope.
     foreach (_k IN LISTS _keys)
@@ -224,6 +224,22 @@ function(_CmDepPublishBlob out_ok src dest)
     endif ()
 endfunction()
 
+# TLS options for a download/upload. Mirrors always verify certificates:
+# binary packages have no pinned hash, and mirror requests may carry
+# credentials. CMDEP_TLS_CAINFO (e.g. a corporate proxy's CA bundle) applies to
+# every request; CMAKE_TLS_CAINFO / CMAKE_TLS_VERIFY keep working as usual.
+function(_CmDepTlsOpts out_var is_mirror)
+    set(_opts "")
+    if (is_mirror)
+        list(APPEND _opts TLS_VERIFY ON)
+    endif ()
+    _CmDepSetting(_ca CMDEP_TLS_CAINFO "")
+    if (_ca)
+        list(APPEND _opts TLS_CAINFO "${_ca}")
+    endif ()
+    set(${out_var} "${_opts}" PARENT_SCOPE)
+endfunction()
+
 # Tries one source. out_status is one of:
 #   OK    dest holds the verified blob
 #   MISS  the source does not have it (missing file, HTTP error such as 404)
@@ -247,7 +263,8 @@ function(_CmDepTryFetch out_status out_msg location dest algo hex is_mirror)
             return()
         endif ()
     else ()
-        set(_opts STATUS _s)
+        _CmDepTlsOpts(_opts ${is_mirror})
+        list(APPEND _opts STATUS _s)
         if (is_mirror)
             _CmDepSetting(_timeout CMDEP_MIRROR_TIMEOUT 10)
             list(APPEND _opts INACTIVITY_TIMEOUT ${_timeout} NETRC OPTIONAL)
@@ -478,7 +495,8 @@ function(_CmDepPushFile out_ok target relpath file name)
         _CmDepPublishBlob(_ok "${file}" "${_dest}")
     else ()
         _CmDepSetting(_timeout CMDEP_MIRROR_TIMEOUT 10)
-        set(_opts STATUS _s INACTIVITY_TIMEOUT ${_timeout} NETRC OPTIONAL)
+        _CmDepTlsOpts(_opts TRUE)
+        list(APPEND _opts STATUS _s INACTIVITY_TIMEOUT ${_timeout} NETRC OPTIONAL)
         _CmDepSetting(_hdr CMDEP_MIRROR_HTTPHEADER "")
         if (_hdr)
             list(APPEND _opts HTTPHEADER "${_hdr}")
@@ -841,8 +859,65 @@ function(_CmDepLockCheckRoot name declared_hash effective_hash declared_version)
     endif ()
 endfunction()
 
-# CmDepFetchPackage(<name> <version> <url> <ALGO=HEX> [PATCHES <file>...])
-# PATCHES paths are relative to the packages file.
+# ---------------------------------------------------------------------------
+# LAZY packages: declared now, fetched when something needs the source
+# (CmDepAddPackage, a local CmDepBinaryPackage build, or CmDepEnsureSource).
+# A binary package served from the cache or a mirror never fetches its source.
+# ---------------------------------------------------------------------------
+function(_CmDepDeferSource name version locator hash patches)
+    set_property(GLOBAL PROPERTY CMDEP_DEFER_${name} TRUE)
+    set_property(GLOBAL PROPERTY CMDEP_DEFER_${name}_VERSION "${version}")
+    set_property(GLOBAL PROPERTY CMDEP_DEFER_${name}_LOCATOR "${locator}")
+    set_property(GLOBAL PROPERTY CMDEP_DEFER_${name}_HASH "${hash}")
+    set_property(GLOBAL PROPERTY CMDEP_DEFER_${name}_PATCHES "${patches}")
+endfunction()
+
+# CmDepEnsureSource(<name>): fetch a LAZY package's source now (no-op if it is
+# already there) and set <name>_SOURCE_DIR in the caller's scope.
+function(CmDepEnsureSource name)
+    get_property(_deferred GLOBAL PROPERTY CMDEP_DEFER_${name})
+    if (_deferred)
+        foreach (_f VERSION LOCATOR HASH PATCHES)
+            get_property(_${_f} GLOBAL PROPERTY CMDEP_DEFER_${name}_${_f})
+        endforeach ()
+        _CmDepPopulate(_src ${name} "${_VERSION}" "${_LOCATOR}" "${_HASH}")
+        if (_PATCHES)
+            _CmDepPatch(_src ${name} "${_src}" ${_PATCHES})
+        endif ()
+        set_property(GLOBAL PROPERTY CMDEP_REG_${name}_SOURCE_DIR "${_src}")
+        set_property(GLOBAL PROPERTY CMDEP_DEFER_${name} FALSE)
+    endif ()
+    get_property(_registered GLOBAL PROPERTY CMDEP_REG_${name}_SOURCE_DIR SET)
+    if (_registered)
+        get_property(_src GLOBAL PROPERTY CMDEP_REG_${name}_SOURCE_DIR)
+    else ()
+        set(_src "${${name}_SOURCE_DIR}")
+    endif ()
+    set(${name}_SOURCE_DIR "${_src}" PARENT_SCOPE)
+endfunction()
+
+# Populates (or, for LAZY, defers) a declared package; sets _cmdep_src.
+# Not a function: patch paths are relative to CMAKE_CURRENT_LIST_DIR, which
+# must be the packages file's.
+macro(_CmDepPopulateOrDefer name lazy version locator hash patches)
+    set(_cmdep_patch_files "")
+    foreach (_cmdep_p IN ITEMS ${patches})
+        get_filename_component(_cmdep_p "${_cmdep_p}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_LIST_DIR}")
+        list(APPEND _cmdep_patch_files "${_cmdep_p}")
+    endforeach ()
+    if (${lazy} AND NOT CMDEP_MIRROR_OUT)
+        _CmDepDeferSource(${name} "${version}" "${locator}" "${hash}" "${_cmdep_patch_files}")
+        set(_cmdep_src "")
+    else ()
+        _CmDepPopulate(_cmdep_src ${name} "${version}" "${locator}" "${hash}")
+        if (_cmdep_patch_files AND NOT CMDEP_MIRROR_OUT)
+            _CmDepPatch(_cmdep_src ${name} "${_cmdep_src}" ${_cmdep_patch_files})
+        endif ()
+    endif ()
+endmacro()
+
+# CmDepFetchPackage(<name> <version> <url> <ALGO=HEX> [PATCHES <file>...] [LAZY])
+# PATCHES paths are relative to the packages file. LAZY: fetch only when needed.
 macro(CmDepFetchPackage name version url url_hash)
     get_property(_cmdep_collecting GLOBAL PROPERTY CMDEP_COLLECTING)
     if (_cmdep_collecting)
@@ -883,7 +958,7 @@ macro(_CmDepReuseRegistered name requested_version requested_hash)
 endmacro()
 
 macro(_CmDepFetchPackageImpl name version url url_hash)
-    cmake_parse_arguments(_cmdep_fp "" "" "PATCHES" ${ARGN})
+    cmake_parse_arguments(_cmdep_fp "LAZY" "" "PATCHES" ${ARGN})
     _CmDepProjectPrefix(_cmdep_prefix)
     string(TOUPPER "${name}" _cmdep_dep)
     string(MAKE_C_IDENTIFIER "${_cmdep_dep}" _cmdep_dep)
@@ -918,16 +993,8 @@ macro(_CmDepFetchPackageImpl name version url url_hash)
                 message(STATUS "cmake-dep: ${name}: USE_SYSTEM set, skipping download")
             endif ()
         else ()
-            _CmDepPopulate(_cmdep_src ${name} "${_cmdep_eff_version}"
-                "${${_cmdep_var_url}}" "${_cmdep_eff_hash}")
-            if (_cmdep_fp_PATCHES AND NOT CMDEP_MIRROR_OUT)
-                set(_cmdep_patch_files "")
-                foreach (_cmdep_p IN LISTS _cmdep_fp_PATCHES)
-                    get_filename_component(_cmdep_p "${_cmdep_p}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_LIST_DIR}")
-                    list(APPEND _cmdep_patch_files "${_cmdep_p}")
-                endforeach ()
-                _CmDepPatch(_cmdep_src ${name} "${_cmdep_src}" ${_cmdep_patch_files})
-            endif ()
+            _CmDepPopulateOrDefer(${name} _cmdep_fp_LAZY "${_cmdep_eff_version}"
+                "${${_cmdep_var_url}}" "${_cmdep_eff_hash}" "${_cmdep_fp_PATCHES}")
         endif ()
         _CmDepDeclarer(_cmdep_who)
         _CmDepRegistrySet(${name} "${_cmdep_src}" "${_cmdep_eff_version}" "${_cmdep_eff_hash}"
@@ -937,7 +1004,7 @@ macro(_CmDepFetchPackageImpl name version url url_hash)
     endif ()
 endmacro()
 
-# CmDepFetchGit(<name> <version> <repo> <commit> [ALGO=HEX] [PATCHES <file>...])
+# CmDepFetchGit(<name> <version> <repo> <commit> [ALGO=HEX] [PATCHES <file>...] [LAZY])
 #
 # A dependency pinned to a git commit (full 40/64-hex id; tags and branches are
 # mutable, so they are not accepted). With a hash -- printed on first use, or
@@ -981,7 +1048,7 @@ function(_CmDepUnpinnedGitHash out_hex name repo commit)
 endfunction()
 
 macro(_CmDepFetchGitImpl name version repo commit)
-    cmake_parse_arguments(_cmdep_fg "" "" "PATCHES" ${ARGN})
+    cmake_parse_arguments(_cmdep_fg "LAZY" "" "PATCHES" ${ARGN})
     _CmDepProjectPrefix(_cmdep_prefix)
     string(TOUPPER "${name}" _cmdep_dep)
     string(MAKE_C_IDENTIFIER "${_cmdep_dep}" _cmdep_dep)
@@ -1030,16 +1097,8 @@ macro(_CmDepFetchGitImpl name version repo commit)
                 message(STATUS "cmake-dep: ${name}: USE_SYSTEM set, skipping download")
             endif ()
         else ()
-            _CmDepPopulate(_cmdep_src ${name} "${_cmdep_eff_version}"
-                "git+${_cmdep_fg_repo}#${_cmdep_fg_commit}" "${_cmdep_eff_hash}")
-            if (_cmdep_fg_PATCHES AND NOT CMDEP_MIRROR_OUT)
-                set(_cmdep_patch_files "")
-                foreach (_cmdep_p IN LISTS _cmdep_fg_PATCHES)
-                    get_filename_component(_cmdep_p "${_cmdep_p}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_LIST_DIR}")
-                    list(APPEND _cmdep_patch_files "${_cmdep_p}")
-                endforeach ()
-                _CmDepPatch(_cmdep_src ${name} "${_cmdep_src}" ${_cmdep_patch_files})
-            endif ()
+            _CmDepPopulateOrDefer(${name} _cmdep_fg_LAZY "${_cmdep_eff_version}"
+                "git+${_cmdep_fg_repo}#${_cmdep_fg_commit}" "${_cmdep_eff_hash}" "${_cmdep_fg_PATCHES}")
         endif ()
         _CmDepDeclarer(_cmdep_who)
         _CmDepRegistrySet(${name} "${_cmdep_src}" "${_cmdep_eff_version}" "${_cmdep_eff_hash}"
@@ -1096,8 +1155,14 @@ endfunction()
 # dependency that declares them gets the locked copy.
 macro(_CmDepFetchRoot packages_file)
     _CmDepLockFileFor(_cmdep_lockfile "${packages_file}")
+    # Read CMDEP_LOCKED here, not only on a mismatch: with -DCMDEP_LOCKED=ON CMake
+    # would otherwise report it as unused, and a missing lock must fail too.
+    _CmDepSetting(_cmdep_locked CMDEP_LOCKED OFF)
     if (EXISTS "${_cmdep_lockfile}")
         _CmDepLoadLock("${_cmdep_lockfile}")
+    elseif (_cmdep_locked)
+        message(FATAL_ERROR "cmake-dep: CMDEP_LOCKED is ON but there is no lockfile (${_cmdep_lockfile}). "
+                            "Run `cmdep lock` and commit cmdep.lock.")
     endif ()
     set_property(GLOBAL PROPERTY CMDEP_IN_ROOT TRUE)
     include("${packages_file}")

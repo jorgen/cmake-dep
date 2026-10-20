@@ -116,6 +116,10 @@ string(FIND "${log}" "libB asks for 1.3; using 1.2" _uni)
 check("rc EQUAL 0 AND res STREQUAL \"zlib=1.2;pat=patched\"" "without a lock: one zlib (first declaration, libA's 1.2), no duplicate targets")
 check("NOT _uni EQUAL -1" "the unification is reported")
 
+configure_root(rc log res "${WORK_DIR}/b1b" -DCMDEP_LOCKED=ON)
+string(FIND "${log}" "there is no lockfile" _nolock)
+check("NOT rc EQUAL 0 AND NOT _nolock EQUAL -1" "CMDEP_LOCKED=ON without a lockfile fails")
+
 # --- L2. cmdep lock ---------------------------------------------------------------------
 cmdep(rc log lock)
 check("rc EQUAL 0 AND EXISTS \"${ROOT}/cmdep.lock\"" "cmdep lock writes cmdep.lock")
@@ -135,6 +139,9 @@ check("NOT _note EQUAL -1" "cmdep lock reports unified versions")
 # --- L3. configure with the lock ----------------------------------------------------------
 configure_root(rc log res "${WORK_DIR}/b3")
 check("rc EQUAL 0 AND res STREQUAL \"zlib=1.3;pat=patched\"" "with the lock: everyone gets the locked zlib 1.3; libB's patch applied")
+configure_root(rc log res "${WORK_DIR}/b3b" -DCMDEP_LOCKED=ON)
+string(FIND "${log}" "not used by the project" _unused)
+check("rc EQUAL 0 AND _unused EQUAL -1" "CMDEP_LOCKED=ON with an up-to-date lock passes (and is not reported as unused)")
 
 # --- L4. tree / --check ------------------------------------------------------------------------
 cmdep(rc log tree)

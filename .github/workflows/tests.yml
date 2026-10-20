@@ -50,6 +50,19 @@ jobs:
       - name: Run tests
         run: cmake -DWORK_DIR=${{ runner.temp }}/cmdep-tests -P tests/CmDepFetchTest.cmake
 
+      # CmDepFetchGit pins `git archive --format=tar` output by hash, so it must be
+      # byte-identical across git versions and platforms. Reference computed with
+      # git 2.43 on Linux; this checks the runner's git (and core.autocrlf=true on
+      # Windows) through cmake-dep's real code path.
+      - name: git archive is deterministic across git versions
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/det" && cd "$RUNNER_TEMP/det"
+          CMDEP_DIR="$RUNNER_TEMP/det-cache" cmake -P "$GITHUB_WORKSPACE/cmake/CmDepCli.cmake" -- \
+            add self 0 https://github.com/jorgen/cmake-dep.git --git 5d08e12a3986f2a738cdb7a204e7c154dfd128ee
+          cat cmdep-packages.cmake
+          grep -q "SHA256=1388138e83fd9bc6f4b548e254a37a0e952abb3698b0781730cddca06edb44b3" cmdep-packages.cmake
+
       - name: Upload test work directory
         if: failure()
         uses: actions/upload-artifact@v4

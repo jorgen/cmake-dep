@@ -61,6 +61,7 @@ function(CmDepAddPackage name)
         return()
     endif ()
     set_property(GLOBAL PROPERTY CMDEP_ADDED_${name} TRUE)
+    CmDepEnsureSource(${name})  # fetches a LAZY package now
 
     set(_forced "")
     foreach (_opt IN LISTS CMDEP_ADD_OPTIONS)

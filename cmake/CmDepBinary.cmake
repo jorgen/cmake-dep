@@ -535,6 +535,7 @@ function(_CmDepBinaryEnsure name)
                                 "building it locally.\nBuild inputs:\n${_inputs}"
                                 "Set CMDEP_BINARIES=prefer to build it here.")
         endif ()
+        CmDepEnsureSource(${name})  # a LAZY source is only fetched when we must build
         set(_src "${${name}_SOURCE_DIR}")
         if (_B_SOURCE_SUBDIR)
             set(_src "${_src}/${_B_SOURCE_SUBDIR}")
