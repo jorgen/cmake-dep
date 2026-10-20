@@ -395,6 +395,7 @@ function(_CmDepBinaryEnsure name)
     set(${name}_BINARY_KEY "${_key}" PARENT_SCOPE)
 
     if (EXISTS "${_stamp}")
+        _CmDepTouch("${_stamp}")
         return()
     endif ()
 

@@ -352,6 +352,22 @@ else ()
 endif ()
 check("_bf EQUAL 0" "binary package suite")
 
+# ===========================================================================
+# Sub-suites run as separate scripts
+# ===========================================================================
+foreach (_suite Cache)
+    execute_process(
+        COMMAND ${CMAKE_COMMAND} -DWORK_DIR=${WORK_DIR}/suite-${_suite}
+                -DRESULT_FILE=${WORK_DIR}/suite-${_suite}-failures
+                -P "${CMAKE_CURRENT_LIST_DIR}/CmDep${_suite}Test.cmake")
+    if (EXISTS "${WORK_DIR}/suite-${_suite}-failures")
+        file(READ "${WORK_DIR}/suite-${_suite}-failures" _sf)
+    else ()
+        set(_sf 1)
+    endif ()
+    check("_sf EQUAL 0" "${_suite} suite")
+endforeach ()
+
 if (_failures GREATER 0)
     message(FATAL_ERROR "${_failures} test(s) failed")
 endif ()

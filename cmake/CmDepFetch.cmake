@@ -122,6 +122,22 @@ function(CmDepCacheDir out_var)
     set(${out_var} "${_dir}" PARENT_SCOPE)
 endfunction()
 
+# Records that a cache entry (or archive) was used, for `cmdep gc`, by
+# refreshing its mtime. Throttled to once a day so a configure normally writes
+# nothing, and best effort so a read-only cache works.
+function(_CmDepTouch path)
+    file(TIMESTAMP "${path}" _t "%s" UTC)
+    string(TIMESTAMP _now "%s" UTC)
+    if (_t AND _now)
+        math(EXPR _age "${_now} - ${_t}")
+        if (_age LESS 86400)
+            return()
+        endif ()
+    endif ()
+    execute_process(COMMAND ${CMAKE_COMMAND} -E touch_nocreate "${path}"
+        RESULT_VARIABLE _r OUTPUT_QUIET ERROR_QUIET)
+endfunction()
+
 # ---------------------------------------------------------------------------
 # Mirrors
 #
@@ -278,6 +294,7 @@ function(_CmDepAcquire out_path out_source name url algo hex work_dir)
     if (EXISTS "${_store}")
         file(${algo} "${_store}" _actual)
         if (_actual STREQUAL hex)
+            _CmDepTouch("${_store}")
             set(${out_path} "${_store}" PARENT_SCOPE)
             set(${out_source} "store" PARENT_SCOPE)
             return()
@@ -471,8 +488,10 @@ function(_CmDepPopulate out_var name version url url_hash)
     set(_stamp "${_dest}/.cmake-dep-complete")
     set(${out_var} "${_dest}" PARENT_SCOPE)
 
-    # Fast path, no lock: a stamped directory is complete and is never removed.
+    # Fast path, no lock: a stamped directory is complete and is only removed
+    # by `cmdep gc` once unused for a while.
     if (EXISTS "${_stamp}")
+        _CmDepTouch("${_stamp}")
         return()
     endif ()
 
