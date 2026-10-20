@@ -1,0 +1,59 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-latest
+          - name: linux (CMake 3.18, minimum supported)
+            os: ubuntu-22.04
+            cmake: '3.18.6'
+          - name: windows (MSVC)
+            os: windows-latest
+          - name: macos
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - uses: seanmiddleditch/gha-setup-ninja@v5
+
+      - name: Use CMake ${{ matrix.cmake }}
+        if: matrix.cmake
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: ${{ matrix.cmake }}
+
+      - name: MSVC environment (for Ninja builds of binary packages)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Tool versions
+        run: |
+          cmake --version
+          ninja --version
+          git --version
+
+      - name: Run tests
+        run: cmake -DWORK_DIR=${{ runner.temp }}/cmdep-tests -P tests/CmDepFetchTest.cmake
+
+      - name: Upload test work directory
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-work-${{ matrix.os }}-${{ matrix.cmake || 'default' }}
+          path: ${{ runner.temp }}/cmdep-tests
+          retention-days: 7

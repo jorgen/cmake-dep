@@ -47,7 +47,7 @@ execute_process(COMMAND ${CMAKE_COMMAND} -E tar czf "${WORK_DIR}/mylib-1.0.tar.g
     WORKING_DIRECTORY "${WORK_DIR}/src")
 file(SHA256 "${WORK_DIR}/mylib-1.0.tar.gz" HLIB)
 file(WRITE "${WORK_DIR}/packages.cmake"
-    "CmDepFetchPackage(mylib 1.0 \"file://${WORK_DIR}/mylib-1.0.tar.gz\" SHA256=${HLIB})\n")
+    "CmDepFetchPackage(mylib 1.0 \"${FU}${WORK_DIR}/mylib-1.0.tar.gz\" SHA256=${HLIB})\n")
 
 # --- consumer project ---------------------------------------------------------
 set(_consumer "${WORK_DIR}/consumer")
@@ -233,7 +233,7 @@ check("NOT _bins" "rejected package is not added to the cache")
 file(REMOVE_RECURSE "${CACHE_DIR}" "${BMIRROR}")
 configure_consumer(rc log "${WORK_DIR}/b11")
 file(READ "${WORK_DIR}/b11/prefix.txt" P11)
-execute_process(COMMAND ${CMAKE_COMMAND} -DCMDEP_BINARY_ENTRY=${P11} -DCMDEP_BINARY_PUSH=file://${BMIRROR}
+execute_process(COMMAND ${CMAKE_COMMAND} -DCMDEP_BINARY_ENTRY=${P11} -DCMDEP_BINARY_PUSH=${FU}${BMIRROR}
         -P "${_repo}/cmake/CmDepBinaryPush.cmake" RESULT_VARIABLE rc OUTPUT_QUIET ERROR_QUIET)
 file(GLOB _shas "${BMIRROR}/bin/*.sha256")
 check("rc EQUAL 0 AND _shas" "CmDepBinaryPush uploads an existing cache entry")
@@ -272,16 +272,22 @@ foreach (_cfg Debug Release)
     execute_process(COMMAND ${CMAKE_COMMAND} --build "${WORK_DIR}/b13" --config ${_cfg}
         RESULT_VARIABLE _r OUTPUT_QUIET ERROR_QUIET)
     if (_r EQUAL 0)
-        execute_process(COMMAND "${WORK_DIR}/b13/${_cfg}/consumer" RESULT_VARIABLE _r OUTPUT_QUIET)
+        find_program(_exe consumer PATHS "${WORK_DIR}/b13/${_cfg}" NO_DEFAULT_PATH NO_CACHE)
+        execute_process(COMMAND "${_exe}" RESULT_VARIABLE _r OUTPUT_QUIET)
     endif ()
     check("_r EQUAL 0" "consumer ${_cfg} build links the matching configuration")
 endforeach ()
 
 # --- B14. single-config generator, several configs: one build dir per config
 file(REMOVE_RECURSE "${CACHE_DIR}")
-configure_consumer(rc log "${WORK_DIR}/b14" "-DBIN_GENERATOR=Unix Makefiles" -DBIN_CONFIGS=Release,Debug)
+if (WIN32)
+    set(_single_gen "NMake Makefiles")
+else ()
+    set(_single_gen "Unix Makefiles")
+endif ()
+configure_consumer(rc log "${WORK_DIR}/b14" "-DBIN_GENERATOR=${_single_gen}" -DBIN_CONFIGS=Release,Debug)
 file(READ "${WORK_DIR}/b14/prefix.txt" P14)
-string(FIND "${log}" "(Unix Makefiles, Debug)" _per)
+string(FIND "${log}" "(${_single_gen}, Debug)" _per)
 check("rc EQUAL 0 AND NOT _per EQUAL -1" "explicit GENERATOR/CONFIGS: one build dir per config")
 file(GLOB _rel "${P14}/lib/*mylib.*")
 file(GLOB _dbg "${P14}/lib/*mylibd.*")

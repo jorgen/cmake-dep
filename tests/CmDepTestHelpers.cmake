@@ -1,6 +1,13 @@
 # Shared helpers for the cmake-dep test scripts. Expects _repo, WORK_DIR and
 # CACHE_DIR to be set by the including script.
 
+# Prefix that turns an absolute path into a file:// URL ("file:///C:/x" on Windows).
+if (WIN32)
+    set(FU "file:///")
+else ()
+    set(FU "file://")
+endif ()
+
 if (NOT DEFINED _failures)
     set(_failures 0)
 endif ()
@@ -13,6 +20,17 @@ macro(check cond msg)
     else ()
         message(STATUS "FAIL: ${msg}")
         math(EXPR _failures "${_failures} + 1")
+        # Show the tail of the most recent command output to make remote (CI)
+        # failures diagnosable.
+        if (DEFINED log AND NOT "${log}" STREQUAL "")
+            string(LENGTH "${log}" _loglen)
+            set(_logtail "${log}")
+            if (_loglen GREATER 3000)
+                math(EXPR _logstart "${_loglen} - 3000")
+                string(SUBSTRING "${log}" ${_logstart} -1 _logtail)
+            endif ()
+            message(STATUS "---- last command output (tail) ----\n${_logtail}\n------------------------------------")
+        endif ()
     endif ()
 endmacro()
 

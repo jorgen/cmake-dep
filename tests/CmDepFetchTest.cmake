@@ -22,11 +22,11 @@ string(SUBSTRING "${H1}" 0 12 S1)
 string(SUBSTRING "${H2}" 0 12 S2)
 
 file(WRITE "${WORK_DIR}/packages.cmake"
-    "CmDepFetchPackage(dep 1.0 \"file://${TGZ1}\" SHA256=${H1})\n")
+    "CmDepFetchPackage(dep 1.0 \"${FU}${TGZ1}\" SHA256=${H1})\n")
 file(WRITE "${WORK_DIR}/bad-packages.cmake"
-    "CmDepFetchPackage(bad 1.0 \"file://${TGZ1}\" SHA256=0000000000000000000000000000000000000000000000000000000000000000)\n")
+    "CmDepFetchPackage(bad 1.0 \"${FU}${TGZ1}\" SHA256=0000000000000000000000000000000000000000000000000000000000000000)\n")
 file(WRITE "${WORK_DIR}/file-packages.cmake"
-    "CmDepFetchFile(single 1.0 \"file://${TGZ1}\" renamed.tgz SHA256=${H1})\n")
+    "CmDepFetchFile(single 1.0 \"${FU}${TGZ1}\" renamed.tgz SHA256=${H1})\n")
 
 set(D1 "${CACHE_DIR}/dep-1.0-${S1}")
 
@@ -62,7 +62,7 @@ check("NOT EXISTS \"${CACHE_DIR}/.tmp/dep-1.0-${S1}\"" "stale temp dir removed")
 
 # --- 5. URL/hash override with same version gets its own directory ---------
 run_fetch(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/packages.cmake
-    "-DPROJ_DEP_URL=file://${TGZ2}" -DPROJ_DEP_SHA256=${H2})
+    "-DPROJ_DEP_URL=${FU}${TGZ2}" -DPROJ_DEP_SHA256=${H2})
 check("rc EQUAL 0 AND EXISTS \"${CACHE_DIR}/dep-1.0-${S2}/.cmake-dep-complete\"" "override fetched into hash-keyed dir")
 check("EXISTS \"${D1}/.cmake-dep-complete\"" "original entry untouched by override")
 
@@ -157,12 +157,20 @@ check("rc EQUAL 0 AND EXISTS \"${D1}/.cmake-dep-complete\"" "configure-mode CmDe
 
 # --- 12. default directory is ~/.cache/cmake-dep (via XDG/HOME) -------------
 set(_home "${WORK_DIR}/home")
+if (WIN32)
+    set(_home_env "LOCALAPPDATA=${_home}")
+    set(_default_cache "${_home}/cmake-dep")
+else ()
+    set(_home_env "HOME=${_home}")
+    set(_default_cache "${_home}/.cache/cmake-dep")
+endif ()
 execute_process(
-    COMMAND ${CMAKE_COMMAND} -E env --unset=CMDEP_DIR --unset=XDG_CACHE_HOME HOME=${_home}
+    COMMAND ${CMAKE_COMMAND} -E env --unset=CMDEP_DIR --unset=XDG_CACHE_HOME
+            CMDEP_CONFIG=${WORK_DIR}/no-such-config.cmake ${_home_env}
             ${CMAKE_COMMAND} -DCMDEP_PROJECT=proj -DCMDEP_PACKAGES_FILE=${WORK_DIR}/packages.cmake
             -P "${_repo}/cmake/CmDepFetchDependencies.cmake"
     RESULT_VARIABLE rc OUTPUT_QUIET ERROR_QUIET)
-check("rc EQUAL 0 AND EXISTS \"${_home}/.cache/cmake-dep/dep-1.0-${S1}/.cmake-dep-complete\"" "default cache is ~/.cache/cmake-dep")
+check("rc EQUAL 0 AND EXISTS \"${_default_cache}/dep-1.0-${S1}/.cmake-dep-complete\"" "default cache location (~/.cache/cmake-dep, %LOCALAPPDATA% on Windows)")
 execute_process(
     COMMAND ${CMAKE_COMMAND} -E env --unset=CMDEP_DIR XDG_CACHE_HOME=${WORK_DIR}/xdg
             ${CMAKE_COMMAND} -DCMDEP_PROJECT=proj -DCMDEP_PACKAGES_FILE=${WORK_DIR}/packages.cmake
@@ -179,12 +187,12 @@ check("rc EQUAL 0 AND EXISTS \"${_proj}/3rdparty/dep-1.0-${S1}/.cmake-dep-comple
 # ===========================================================================
 # Mirrors, archive store, write-back, config file
 # ===========================================================================
-set(BOGUS_URL "file://${WORK_DIR}/does-not-exist.tar.gz")
+set(BOGUS_URL "${FU}${WORK_DIR}/does-not-exist.tar.gz")
 file(WRITE "${WORK_DIR}/bogus-packages.cmake"
     "CmDepFetchPackage(dep 1.0 \"${BOGUS_URL}\" SHA256=${H1})\n")
 file(WRITE "${WORK_DIR}/two-packages.cmake"
-    "CmDepFetchPackage(dep 1.0 \"file://${TGZ1}\" SHA256=${H1})\n"
-    "CmDepFetchPackage(dep2 1.0 \"file://${TGZ2}\" SHA256=${H2})\n")
+    "CmDepFetchPackage(dep 1.0 \"${FU}${TGZ1}\" SHA256=${H1})\n"
+    "CmDepFetchPackage(dep2 1.0 \"${FU}${TGZ2}\" SHA256=${H2})\n")
 set(M_EMPTY "${WORK_DIR}/mirror-empty")
 set(M_BAD "${WORK_DIR}/mirror-bad")
 set(M_GOOD "${WORK_DIR}/mirror-good")
@@ -216,15 +224,15 @@ check("rc EQUAL 0 AND EXISTS \"${STORE1}\" AND EXISTS \"${CACHE_DIR}/single-1.0-
 # --- 14. mirror order: missing -> corrupt -> good ---------------------------
 file(REMOVE_RECURSE "${CACHE_DIR}")
 run_fetch(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/bogus-packages.cmake
-    "-DCMDEP_MIRRORS=${M_EMPTY},file://${M_BAD},file://${M_GOOD}")
+    "-DCMDEP_MIRRORS=${M_EMPTY},${FU}${M_BAD},${FU}${M_GOOD}")
 string(FIND "${log}" "served a corrupt copy" _bad)
-string(FIND "${log}" "fetched from mirror file://${M_GOOD}" _good)
+string(FIND "${log}" "fetched from mirror ${FU}${M_GOOD}" _good)
 check("rc EQUAL 0 AND EXISTS \"${D1}/CMakeLists.txt\"" "falls through missing and corrupt mirrors to a good one")
 check("NOT _bad EQUAL -1 AND NOT _good EQUAL -1" "corrupt mirror reported, good mirror named")
 
 # --- 15. mirrors-only miss fails with a clear message ----------------------
 file(REMOVE_RECURSE "${CACHE_DIR}")
-run_fetch(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/packages.cmake "-DCMDEP_MIRRORS=${M_EMPTY},file://${M_BAD}")
+run_fetch(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/packages.cmake "-DCMDEP_MIRRORS=${M_EMPTY},${FU}${M_BAD}")
 string(FIND "${log}" "'direct' is not in CMDEP_MIRRORS" _hint)
 string(FIND "${log}" "${M_EMPTY}: not present" _miss)
 check("NOT rc EQUAL 0 AND NOT _hint EQUAL -1 AND NOT _miss EQUAL -1" "mirrors-only miss fails listing every source tried")
@@ -237,7 +245,7 @@ check("rc EQUAL 0 AND EXISTS \"${D1}/CMakeLists.txt\"" "'direct' after a missing
 
 # --- 17. write-back ---------------------------------------------------------
 file(REMOVE_RECURSE "${CACHE_DIR}" "${M_PUSH}")
-run_fetch(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/packages.cmake "-DCMDEP_MIRROR_PUSH=file://${M_PUSH}")
+run_fetch(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/packages.cmake "-DCMDEP_MIRROR_PUSH=${FU}${M_PUSH}")
 file(GLOB _parts "${M_PUSH}/sha256/*.part-*")
 check("rc EQUAL 0 AND EXISTS \"${M_PUSH}/sha256/${H1}\" AND NOT _parts" "fresh download pushed to CMDEP_MIRROR_PUSH")
 file(SHA256 "${M_PUSH}/sha256/${H1}" _ph)
@@ -254,7 +262,7 @@ check("rc EQUAL 0 AND NOT _np EQUAL -1 AND EXISTS \"${D1}/CMakeLists.txt\"" "fai
 # --- 18. user config file and precedence -------------------------------------
 file(REMOVE_RECURSE "${CACHE_DIR}")
 file(WRITE "${WORK_DIR}/user-config.cmake"
-    "set(CMDEP_MIRRORS \"file://${M_GOOD}\")\nset(CMDEP_KEEP_ARCHIVES OFF)\n")
+    "set(CMDEP_MIRRORS \"${FU}${M_GOOD}\")\nset(CMDEP_KEEP_ARCHIVES OFF)\n")
 set(RUN_ENV "CMDEP_CONFIG=${WORK_DIR}/user-config.cmake")
 run_fetch(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/bogus-packages.cmake)
 check("rc EQUAL 0 AND EXISTS \"${D1}/CMakeLists.txt\" AND NOT EXISTS \"${STORE1}\"" "config file supplies CMDEP_MIRRORS and CMDEP_KEEP_ARCHIVES")
@@ -280,7 +288,7 @@ run_fetch(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/packages.cmake)  # fills the 
 run_mirror(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/bogus-packages.cmake
     -DCMDEP_MIRROR_OUT=${M_OUT} "-DCMDEP_MIRRORS=${M_EMPTY}")
 check("rc EQUAL 0 AND EXISTS \"${M_OUT}/sha256/${H1}\"" "mirror populated from the local archive store, no network")
-run_mirror(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/two-packages.cmake -DCMDEP_MIRROR_OUT=file://${M_OUT})
+run_mirror(rc log -DCMDEP_PACKAGES_FILE=${WORK_DIR}/two-packages.cmake -DCMDEP_MIRROR_OUT=${FU}${M_OUT})
 check("rc EQUAL 0 AND EXISTS \"${M_OUT}/sha256/${H2}\"" "missing archive fetched upstream into the mirror")
 string(FIND "${log}" "already in" _already)
 check("NOT _already EQUAL -1" "archives already in the mirror are skipped")
@@ -297,7 +305,7 @@ file(WRITE "${_mproj}/CMakeLists.txt"
     "project(mproj LANGUAGES NONE)\n"
     "list(APPEND CMAKE_MODULE_PATH \"${_repo}/cmake\")\n"
     "include(CmDepMain)\n"
-    "set(CMDEP_MIRRORS \"${M_EMPTY}\" \"file://${M_GOOD}\")\n"
+    "set(CMDEP_MIRRORS \"${M_EMPTY}\" \"${FU}${M_GOOD}\")\n"
     "set(CMDEP_PACKAGES_FILE \"${WORK_DIR}/bogus-packages.cmake\")\n"
     "CmDepFetch()\n"
     "CmDepAddPackage(dep)\n")
