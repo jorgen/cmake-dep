@@ -356,7 +356,7 @@ check("_bf EQUAL 0" "binary package suite")
 # ===========================================================================
 # Sub-suites run as separate scripts
 # ===========================================================================
-foreach (_suite Cache Cli Patch)
+foreach (_suite Cache Cli Patch Git)
     execute_process(
         COMMAND ${CMAKE_COMMAND} -DWORK_DIR=${WORK_DIR}/suite-${_suite}
                 -DRESULT_FILE=${WORK_DIR}/suite-${_suite}-failures

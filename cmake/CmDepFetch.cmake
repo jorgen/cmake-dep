@@ -282,6 +282,94 @@ function(_CmDepTryFetch out_status out_msg location dest algo hex is_mirror)
     set(${out_msg} "" PARENT_SCOPE)
 endfunction()
 
+# ---------------------------------------------------------------------------
+# Git sources
+#
+# A git dependency is pinned by commit. Its content is materialised as
+#   git archive --format=tar --prefix=source/ <commit>
+# which depends only on the commit, so it can be hash-addressed like any
+# other archive (archive store, mirrors, write-back). In the fetch path its
+# "URL" is git+<repo>#<commit>.
+# ---------------------------------------------------------------------------
+
+# Writes the archive of <commit> from <repo> to <dest>. Sets out_ok/out_msg.
+# Git verifies the commit id itself, so the result is trustworthy whatever the
+# transport.
+function(_CmDepGitArchive out_ok out_msg dest repo commit)
+    find_program(CMDEP_GIT_EXECUTABLE NAMES git)
+    mark_as_advanced(CMDEP_GIT_EXECUTABLE)
+    if (NOT CMDEP_GIT_EXECUTABLE)
+        set(${out_ok} FALSE PARENT_SCOPE)
+        set(${out_msg} "git not found" PARENT_SCOPE)
+        return()
+    endif ()
+    get_filename_component(_d "${dest}" DIRECTORY)
+    set(_w "${_d}/git-work")
+    file(REMOVE_RECURSE "${_w}")
+    file(MAKE_DIRECTORY "${_w}")
+    set(_git ${CMAKE_COMMAND} -E env GIT_TERMINAL_PROMPT=0 "GIT_CEILING_DIRECTORIES=${_d}"
+        "${CMDEP_GIT_EXECUTABLE}" -c core.autocrlf=false -c core.eol=lf -c tar.umask=0022)
+    execute_process(COMMAND ${_git} init -q WORKING_DIRECTORY "${_w}" RESULT_VARIABLE _r OUTPUT_QUIET ERROR_QUIET)
+    # Shallow fetch of exactly the commit; fall back to a full fetch for
+    # servers that don't allow fetching an arbitrary commit.
+    execute_process(COMMAND ${_git} fetch -q --depth 1 --no-tags "${repo}" "${commit}"
+        WORKING_DIRECTORY "${_w}" RESULT_VARIABLE _r OUTPUT_QUIET ERROR_VARIABLE _e)
+    if (NOT _r EQUAL 0)
+        execute_process(COMMAND ${_git} fetch -q --no-tags "${repo}" "+refs/heads/*:refs/remotes/origin/*" "+refs/tags/*:refs/tags/*"
+            WORKING_DIRECTORY "${_w}" RESULT_VARIABLE _r OUTPUT_QUIET ERROR_VARIABLE _e)
+    endif ()
+    if (_r EQUAL 0)
+        execute_process(COMMAND ${_git} archive --format=tar --prefix=source/ -o "${dest}" "${commit}"
+            WORKING_DIRECTORY "${_w}" RESULT_VARIABLE _r OUTPUT_QUIET ERROR_VARIABLE _e)
+    endif ()
+    file(REMOVE_RECURSE "${_w}")
+    if (_r EQUAL 0)
+        set(${out_ok} TRUE PARENT_SCOPE)
+        set(${out_msg} "" PARENT_SCOPE)
+    else ()
+        file(REMOVE "${dest}")
+        string(STRIP "${_e}" _e)
+        set(${out_ok} FALSE PARENT_SCOPE)
+        set(${out_msg} "git: ${_e}" PARENT_SCOPE)
+    endif ()
+endfunction()
+
+# Returns the SHA256 of the archive of <commit> (see above), creating it in the
+# archive store if needed. A small index (<cache>/git/<commit>.sha256) makes
+# later lookups free. Used when a git dependency has no pinned hash, and by
+# `cmdep add --git`.
+function(_CmDepGitArchiveHash out_hex name repo commit)
+    CmDepCacheDir(_root)
+    set(_index "${_root}/git/${commit}.sha256")
+    if (EXISTS "${_index}")
+        file(READ "${_index}" _hex)
+        string(STRIP "${_hex}" _hex)
+        if (EXISTS "${_root}/archives/sha256/${_hex}")
+            set(${out_hex} "${_hex}" PARENT_SCOPE)
+            return()
+        endif ()
+    endif ()
+    file(MAKE_DIRECTORY "${_root}/.locks" "${_root}/.tmp" "${_root}/git")
+    set(_lock "${_root}/.locks/git-${commit}.lock")
+    file(LOCK "${_lock}" GUARD FUNCTION)
+    set(_work "${_root}/.tmp/git-${commit}")
+    file(REMOVE_RECURSE "${_work}")
+    file(MAKE_DIRECTORY "${_work}")
+    message(STATUS "cmake-dep: ${name}: fetching ${repo} at ${commit}")
+    _CmDepGitArchive(_ok _msg "${_work}/archive.tar" "${repo}" "${commit}")
+    if (NOT _ok)
+        file(REMOVE_RECURSE "${_work}")
+        message(FATAL_ERROR "cmake-dep: ${name}: could not fetch ${repo} at ${commit}: ${_msg}")
+    endif ()
+    file(SHA256 "${_work}/archive.tar" _hex)
+    _CmDepPublishBlob(_ok "${_work}/archive.tar" "${_root}/archives/sha256/${_hex}" MOVE)
+    file(WRITE "${_index}.tmp" "${_hex}\n")
+    file(RENAME "${_index}.tmp" "${_index}")
+    file(REMOVE_RECURSE "${_work}")
+    file(LOCK "${_lock}" RELEASE)
+    set(${out_hex} "${_hex}" PARENT_SCOPE)
+endfunction()
+
 # Obtains a verified copy of blob <algo>/<hex>. Looks in the local archive
 # store first, then each CMDEP_MIRRORS entry in order (`direct` = <url>).
 # Sets out_path to the verified file -- the store copy, or <work_dir>/download
@@ -308,7 +396,26 @@ function(_CmDepAcquire out_path out_source name url algo hex work_dir)
     set(_errors "")
     set(_has_direct FALSE)
     foreach (_src IN LISTS _sources)
-        if (_src STREQUAL "direct")
+        if (_src STREQUAL "direct" AND url MATCHES "^git\\+(.+)#([0-9a-fA-F]+)$")
+            set(_has_direct TRUE)
+            set(_repo "${CMAKE_MATCH_1}")
+            set(_commit "${CMAKE_MATCH_2}")
+            message(STATUS "cmake-dep: ${name}: fetching ${_repo} at ${_commit}")
+            _CmDepGitArchive(_ok _msg "${_dl}" "${_repo}" "${_commit}")
+            if (_ok)
+                file(${algo} "${_dl}" _actual)
+                if (_actual STREQUAL hex)
+                    set(_st OK)
+                else ()
+                    file(REMOVE "${_dl}")
+                    set(_st BAD)
+                    set(_msg "archive of ${_commit} has ${algo} ${_actual}, expected ${hex} (a different "
+                             "git version can produce a different archive; re-pin with `cmdep add --git`)")
+                endif ()
+            else ()
+                set(_st DEAD)
+            endif ()
+        elseif (_src STREQUAL "direct")
             set(_has_direct TRUE)
             message(STATUS "cmake-dep: ${name}: downloading ${url}")
             _CmDepTryFetch(_st _msg "${url}" "${_dl}" ${algo} ${hex} FALSE)
@@ -715,6 +822,89 @@ macro(CmDepFetchPackage name version url url_hash)
     set(${name}_VERSION "${_cmdep_eff_version}" PARENT_SCOPE)
     set(${name}_USE_SYSTEM "${_cmdep_use_system}" PARENT_SCOPE)
     set(${name}_HASH "${_cmdep_algo}=${${_cmdep_var_hash}}" PARENT_SCOPE)
+endmacro()
+
+# CmDepFetchGit(<name> <version> <repo> <commit> [ALGO=HEX] [PATCHES <file>...])
+#
+# A dependency pinned to a git commit (full 40/64-hex id; tags and branches are
+# mutable, so they are not accepted). With a hash -- printed on first use, or
+# written by `cmdep add --git` -- it is an ordinary hash-addressed archive:
+# cached, mirrored, pushed. Without one it is fetched straight from <repo> with
+# git (which verifies the commit id); mirrors are not used.
+#
+# Knobs: <PREFIX>_<DEP>_VERSION, _GIT_URL, _COMMIT, _SHA256 and
+# <PREFIX>_USE_SYSTEM_<DEP>, like CmDepFetchPackage.
+macro(CmDepFetchGit name version repo commit)
+    cmake_parse_arguments(_cmdep_fg "" "" "PATCHES" ${ARGN})
+    _CmDepProjectPrefix(_cmdep_prefix)
+    string(TOUPPER "${name}" _cmdep_dep)
+    string(MAKE_C_IDENTIFIER "${_cmdep_dep}" _cmdep_dep)
+    set(_cmdep_fg_hash "")
+    foreach (_cmdep_a IN LISTS _cmdep_fg_UNPARSED_ARGUMENTS)
+        if (_cmdep_a MATCHES "^[A-Za-z0-9_]+=[0-9a-fA-F]+$")
+            set(_cmdep_fg_hash "${_cmdep_a}")
+        else ()
+            message(FATAL_ERROR "cmake-dep: CmDepFetchGit(${name}): unexpected argument '${_cmdep_a}'")
+        endif ()
+    endforeach ()
+
+    set(${_cmdep_prefix}_${_cmdep_dep}_VERSION "${version}" CACHE STRING "Version of ${name}")
+    set(${_cmdep_prefix}_${_cmdep_dep}_GIT_URL "${repo}" CACHE STRING "Git repository of ${name}")
+    set(${_cmdep_prefix}_${_cmdep_dep}_COMMIT "${commit}" CACHE STRING "Git commit of ${name}")
+    string(REGEX REPLACE "^[^=]*=" "" _cmdep_fg_hex "${_cmdep_fg_hash}")
+    set(${_cmdep_prefix}_${_cmdep_dep}_SHA256 "${_cmdep_fg_hex}" CACHE STRING "SHA256 of the archive of ${name}'s commit (optional)")
+    option(${_cmdep_prefix}_USE_SYSTEM_${_cmdep_dep} "Use a system-installed ${name} instead of fetching" OFF)
+
+    set(_cmdep_eff_version "${${_cmdep_prefix}_${_cmdep_dep}_VERSION}")
+    set(_cmdep_fg_repo "${${_cmdep_prefix}_${_cmdep_dep}_GIT_URL}")
+    set(_cmdep_fg_commit "${${_cmdep_prefix}_${_cmdep_dep}_COMMIT}")
+    set(_cmdep_fg_hex "${${_cmdep_prefix}_${_cmdep_dep}_SHA256}")
+    set(_cmdep_use_system "${${_cmdep_prefix}_USE_SYSTEM_${_cmdep_dep}}")
+    string(TOLOWER "${_cmdep_fg_commit}" _cmdep_fg_commit)
+    string(LENGTH "${_cmdep_fg_commit}" _cmdep_fg_len)  # CMake regexes have no {n}
+    if (NOT _cmdep_fg_commit MATCHES "^[0-9a-f]+$" OR NOT (_cmdep_fg_len EQUAL 40 OR _cmdep_fg_len EQUAL 64))
+        message(FATAL_ERROR "cmake-dep: CmDepFetchGit(${name}): '${_cmdep_fg_commit}' is not a full commit id. "
+                            "Pin a commit, not a branch or tag (git rev-parse <tag>^{commit}).")
+    endif ()
+
+    set(_cmdep_src "")
+    if (_cmdep_use_system)
+        if (CMAKE_SCRIPT_MODE_FILE)
+            message(STATUS "cmake-dep: ${name}: USE_SYSTEM set, skipping download")
+        endif ()
+    else ()
+        if (_cmdep_fg_hex STREQUAL "")
+            _CmDepMirrorList(_cmdep_fg_sources)
+            list(FIND _cmdep_fg_sources direct _cmdep_fg_direct)
+            if (_cmdep_fg_direct EQUAL -1)
+                message(FATAL_ERROR "cmake-dep: ${name}: an unpinned git dependency must be cloned from "
+                                    "${_cmdep_fg_repo}, but 'direct' is not in CMDEP_MIRRORS. Pin it "
+                                    "(SHA256=..., see `cmdep add --git`) so mirrors can serve it.")
+            endif ()
+            _CmDepGitArchiveHash(_cmdep_fg_hex ${name} "${_cmdep_fg_repo}" "${_cmdep_fg_commit}")
+            message(STATUS "cmake-dep: ${name}: pin it to use mirrors -- add SHA256=${_cmdep_fg_hex} "
+                           "to CmDepFetchGit(${name} ...)")
+        endif ()
+        _CmDepPopulate(_cmdep_src ${name} "${_cmdep_eff_version}"
+            "git+${_cmdep_fg_repo}#${_cmdep_fg_commit}" "SHA256=${_cmdep_fg_hex}")
+        if (_cmdep_fg_PATCHES AND NOT CMDEP_MIRROR_OUT)
+            set(_cmdep_patch_files "")
+            foreach (_cmdep_p IN LISTS _cmdep_fg_PATCHES)
+                get_filename_component(_cmdep_p "${_cmdep_p}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_LIST_DIR}")
+                list(APPEND _cmdep_patch_files "${_cmdep_p}")
+            endforeach ()
+            _CmDepPatch(_cmdep_src ${name} "${_cmdep_src}" ${_cmdep_patch_files})
+        endif ()
+    endif ()
+
+    set(${name}_SOURCE_DIR "${_cmdep_src}")
+    set(${name}_VERSION "${_cmdep_eff_version}")
+    set(${name}_USE_SYSTEM "${_cmdep_use_system}")
+    set(${name}_HASH "SHA256=${_cmdep_fg_hex}")
+    set(${name}_SOURCE_DIR "${_cmdep_src}" PARENT_SCOPE)
+    set(${name}_VERSION "${_cmdep_eff_version}" PARENT_SCOPE)
+    set(${name}_USE_SYSTEM "${_cmdep_use_system}" PARENT_SCOPE)
+    set(${name}_HASH "SHA256=${_cmdep_fg_hex}" PARENT_SCOPE)
 endmacro()
 
 function(CmDepUseSystem name out_var)
